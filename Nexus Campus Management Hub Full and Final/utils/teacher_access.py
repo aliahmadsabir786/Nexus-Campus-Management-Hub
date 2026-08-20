@@ -34,6 +34,7 @@ from flask import request, jsonify
 from flask_login import current_user, login_required
 
 from db import query
+from utils.context import ctx_and, in_context
 
 
 # ================================================================
@@ -110,8 +111,12 @@ def get_assigned_students(teacher_id, class_id=None, section_id=None, subject_id
             return []
 
     ph  = ",".join(["%s"] * len(section_ids))
-    sql = f"SELECT * FROM students WHERE section_id IN ({ph}) ORDER BY roll_no"
-    return query(sql, section_ids)
+    # Institution isolation on top of assignment scoping (defence in depth:
+    # even a mis-created assignment row cannot expose another campus).
+    ctx_sql, ctx_args = ctx_and()
+    sql = (f"SELECT * FROM students WHERE section_id IN ({ph})" + ctx_sql +
+           " ORDER BY roll_no")
+    return query(sql, list(section_ids) + ctx_args)
 
 
 def verify_student_access(teacher_id, student_id):
@@ -119,6 +124,11 @@ def verify_student_access(teacher_id, student_id):
     Return True if teacher_id is allowed to act on student_id.
     Admins always get True.
     """
+    # A student outside the caller's department/campus is never accessible,
+    # whatever the assignment table says.
+    if in_context("students", student_id) is not True:
+        return False
+
     if _is_admin():
         return True
 
@@ -194,10 +204,18 @@ def teacher_self_or_admin(f):
 
 def assert_student_access(student_id):
     """
-    Call inside a route body.  Returns a 403 JSON response if the
-    current teacher is NOT allowed to act on student_id, else None.
-    Admins always pass.
+    Call inside a route body.  Returns an error JSON response if the current
+    caller may NOT act on student_id, else None.
+
+    Two independent checks:
+      1. Institution context — applies to EVERY role, admins included.  An
+         out-of-context student is reported as "not found" (404) so IDs from
+         another campus cannot be probed.
+      2. Teacher assignment scoping — admins bypass this one, as before.
     """
+    if in_context("students", student_id) is not True:
+        return jsonify({"error": "Student not found"}), 404
+
     if _is_admin():
         return None
     if current_user.role != "teacher":

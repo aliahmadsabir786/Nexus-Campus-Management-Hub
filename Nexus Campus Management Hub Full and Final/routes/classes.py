@@ -28,6 +28,13 @@ from flask import Blueprint, request, jsonify
 from flask_login import login_required
 from db import query
 from utils.auth import perm_required
+from utils.context import (
+    assert_class_in_context,
+    assert_in_context,
+    assert_section_in_context,
+    ctx_clause,
+    write_context,
+)
 
 classes_bp = Blueprint("classes", __name__)
 
@@ -77,16 +84,18 @@ def safe_class_student(row):
 @classes_bp.route("/api/classes", methods=["GET"])
 @login_required
 def api_get_classes():
-    rows = query("""
+    clause, params = ctx_clause("c")
+    rows = query(f"""
         SELECT c.*,
                COUNT(DISTINCT s.id)   AS section_count,
                COUNT(DISTINCT cs.id)  AS student_count
         FROM   classes c
         LEFT JOIN sections s  ON s.class_id  = c.id
         LEFT JOIN class_students cs ON cs.section_id = s.id
+        WHERE  {clause}
         GROUP BY c.id
         ORDER BY c.name
-    """)
+    """, params)
     result = []
     for r in rows:
         d = safe_class(r)
@@ -107,18 +116,29 @@ def api_add_class():
         return jsonify({"error": "Class name is required"}), 400
     if not code:
         return jsonify({"error": "Class code is required"}), 400
-    if query("SELECT id FROM classes WHERE name=%s", (name,), one=True):
+
+    dept_id, campus_id = write_context()
+    if not dept_id:
+        return jsonify({"error": "No institution context — please sign in again"}), 403
+
+    # Uniqueness is per institution, not global: Boys and Girls may each own
+    # a class called "FSc Pre-Medical" (see migration 001, uq_class_*_ctx).
+    clause, params = ctx_clause()
+    if query(f"SELECT id FROM classes WHERE name=%s AND {clause}", [name] + params, one=True):
         return jsonify({"error": "A class with this name already exists"}), 409
-    if query("SELECT id FROM classes WHERE code=%s", (code,), one=True):
+    if query(f"SELECT id FROM classes WHERE code=%s AND {clause}", [code] + params, one=True):
         return jsonify({"error": "A class with this code already exists"}), 409
 
     try:
         query(
-            "INSERT INTO classes (name, code, description, status) VALUES (%s,%s,%s,%s)",
-            (name, code, data.get("description", ""), data.get("status", "active")),
+            "INSERT INTO classes (name, code, description, status, department_id, campus_id) "
+            "VALUES (%s,%s,%s,%s,%s,%s)",
+            (name, code, data.get("description", ""), data.get("status", "active"),
+             dept_id, campus_id),
             commit=True,
         )
-        new = query("SELECT * FROM classes WHERE code=%s", (code,), one=True)
+        new = query(f"SELECT * FROM classes WHERE code=%s AND {clause}",
+                    [code] + params, one=True)
         return jsonify({"success": True, "class": safe_class(new)}), 201
     except Exception as e:
         return jsonify({"error": f"Failed to create class: {str(e)}"}), 500
@@ -127,9 +147,10 @@ def api_add_class():
 @classes_bp.route("/api/classes/<int:cid>", methods=["PUT"])
 @perm_required("classes")
 def api_update_class(cid):
+    guard = assert_class_in_context(cid)
+    if guard:
+        return guard
     cls = query("SELECT * FROM classes WHERE id=%s", (cid,), one=True)
-    if not cls:
-        return jsonify({"error": "Class not found"}), 404
 
     data = request.get_json(force=True, silent=True) or {}
     sets, args = [], []
@@ -157,9 +178,9 @@ def api_update_class(cid):
 @classes_bp.route("/api/classes/<int:cid>", methods=["DELETE"])
 @perm_required("classes")
 def api_delete_class(cid):
-    cls = query("SELECT id FROM classes WHERE id=%s", (cid,), one=True)
-    if not cls:
-        return jsonify({"error": "Class not found"}), 404
+    guard = assert_class_in_context(cid)
+    if guard:
+        return guard
     query("DELETE FROM classes WHERE id=%s", (cid,), commit=True)
     return jsonify({"success": True})
 
@@ -167,9 +188,10 @@ def api_delete_class(cid):
 @classes_bp.route("/api/classes/<int:cid>/status", methods=["PATCH"])
 @perm_required("classes")
 def api_toggle_class_status(cid):
+    guard = assert_class_in_context(cid)
+    if guard:
+        return guard
     cls = query("SELECT * FROM classes WHERE id=%s", (cid,), one=True)
-    if not cls:
-        return jsonify({"error": "Class not found"}), 404
     new_status = "inactive" if cls["status"] == "active" else "active"
     query("UPDATE classes SET status=%s WHERE id=%s", (new_status, cid), commit=True)
     return jsonify({"success": True, "status": new_status})
@@ -182,9 +204,9 @@ def api_toggle_class_status(cid):
 @classes_bp.route("/api/classes/<int:cid>/sections", methods=["GET"])
 @login_required
 def api_get_sections(cid):
-    cls = query("SELECT id FROM classes WHERE id=%s", (cid,), one=True)
-    if not cls:
-        return jsonify({"error": "Class not found"}), 404
+    guard = assert_class_in_context(cid)
+    if guard:
+        return guard
 
     rows = query("""
         SELECT s.*, COUNT(cs.id) AS student_count
@@ -206,9 +228,9 @@ def api_get_sections(cid):
 @classes_bp.route("/api/classes/<int:cid>/sections", methods=["POST"])
 @perm_required("classes")
 def api_add_section(cid):
-    cls = query("SELECT id FROM classes WHERE id=%s", (cid,), one=True)
-    if not cls:
-        return jsonify({"error": "Class not found"}), 404
+    guard = assert_class_in_context(cid)
+    if guard:
+        return guard
 
     data = request.get_json(force=True, silent=True) or {}
     name = data.get("name", "").strip()
@@ -232,9 +254,10 @@ def api_add_section(cid):
 @classes_bp.route("/api/sections/<int:sid>", methods=["PUT"])
 @perm_required("classes")
 def api_update_section(sid):
+    guard = assert_section_in_context(sid)
+    if guard:
+        return guard
     sec = query("SELECT * FROM sections WHERE id=%s", (sid,), one=True)
-    if not sec:
-        return jsonify({"error": "Section not found"}), 404
 
     data = request.get_json(force=True, silent=True) or {}
     sets, args = [], []
@@ -259,9 +282,9 @@ def api_update_section(sid):
 @classes_bp.route("/api/sections/<int:sid>", methods=["DELETE"])
 @perm_required("classes")
 def api_delete_section(sid):
-    sec = query("SELECT id FROM sections WHERE id=%s", (sid,), one=True)
-    if not sec:
-        return jsonify({"error": "Section not found"}), 404
+    guard = assert_section_in_context(sid)
+    if guard:
+        return guard
     query("DELETE FROM sections WHERE id=%s", (sid,), commit=True)
     return jsonify({"success": True})
 
@@ -273,9 +296,9 @@ def api_delete_section(sid):
 @classes_bp.route("/api/sections/<int:sid>/students", methods=["GET"])
 @login_required
 def api_get_class_students(sid):
-    sec = query("SELECT id FROM sections WHERE id=%s", (sid,), one=True)
-    if not sec:
-        return jsonify({"error": "Section not found"}), 404
+    guard = assert_section_in_context(sid)
+    if guard:
+        return guard
 
     search = request.args.get("search", "").strip()
     status = request.args.get("status", "")
@@ -308,9 +331,9 @@ def api_get_class_students(sid):
 @classes_bp.route("/api/sections/<int:sid>/students", methods=["POST"])
 @perm_required("classes")
 def api_add_class_student(sid):
-    sec = query("SELECT id FROM sections WHERE id=%s", (sid,), one=True)
-    if not sec:
-        return jsonify({"error": "Section not found"}), 404
+    guard = assert_section_in_context(sid)
+    if guard:
+        return guard
 
     data    = request.get_json(force=True, silent=True) or {}
     name    = data.get("name", "").strip()
@@ -344,9 +367,10 @@ def api_add_class_student(sid):
 @classes_bp.route("/api/class-students/<int:stid>", methods=["PUT"])
 @perm_required("classes")
 def api_update_class_student(stid):
+    guard = assert_in_context("class_students", stid, "Student")
+    if guard:
+        return guard
     st = query("SELECT * FROM class_students WHERE id=%s", (stid,), one=True)
-    if not st:
-        return jsonify({"error": "Student not found"}), 404
 
     data = request.get_json(force=True, silent=True) or {}
     sets, args = [], []
@@ -374,9 +398,9 @@ def api_update_class_student(stid):
 @classes_bp.route("/api/class-students/<int:stid>", methods=["DELETE"])
 @perm_required("classes")
 def api_delete_class_student(stid):
-    st = query("SELECT id FROM class_students WHERE id=%s", (stid,), one=True)
-    if not st:
-        return jsonify({"error": "Student not found"}), 404
+    guard = assert_in_context("class_students", stid, "Student")
+    if guard:
+        return guard
     query("DELETE FROM class_students WHERE id=%s", (stid,), commit=True)
     return jsonify({"success": True})
 
@@ -388,16 +412,18 @@ def api_delete_class_student(stid):
 @classes_bp.route("/api/classes/hierarchy", methods=["GET"])
 @login_required
 def api_get_hierarchy():
-    classes = query("""
+    clause, params = ctx_clause("c")
+    classes = query(f"""
         SELECT c.*,
                COUNT(DISTINCT s.id)  AS section_count,
                COUNT(DISTINCT cs.id) AS student_count
         FROM   classes c
         LEFT JOIN sections s  ON s.class_id  = c.id
         LEFT JOIN class_students cs ON cs.section_id = s.id
+        WHERE  {clause}
         GROUP BY c.id
         ORDER BY c.name
-    """)
+    """, params)
 
     result = []
     for cls in classes:
@@ -433,7 +459,11 @@ def api_get_hierarchy():
 @classes_bp.route("/api/classes/dropdown", methods=["GET"])
 @login_required
 def api_classes_dropdown():
-    rows = query("SELECT id, name, code FROM classes WHERE status='active' ORDER BY name")
+    clause, params = ctx_clause()
+    rows = query(
+        f"SELECT id, name, code FROM classes WHERE status='active' AND {clause} ORDER BY name",
+        params
+    )
     return jsonify([{"id": r["id"], "name": r["name"], "code": r["code"]} for r in rows])
 
 
@@ -441,18 +471,21 @@ def api_classes_dropdown():
 @login_required
 def api_sections_dropdown():
     cid = request.args.get("class_id", "")
+    clause, params = ctx_clause("c")
     if cid:
         rows = query(
             "SELECT s.id, s.name, s.class_id, c.name AS class_name "
             "FROM sections s JOIN classes c ON c.id=s.class_id "
-            "WHERE s.class_id=%s ORDER BY s.name",
-            (cid,),
+            f"WHERE s.class_id=%s AND {clause} ORDER BY s.name",
+            [cid] + params,
         )
     else:
         rows = query(
             "SELECT s.id, s.name, s.class_id, c.name AS class_name "
             "FROM sections s JOIN classes c ON c.id=s.class_id "
-            "ORDER BY c.name, s.name"
+            f"WHERE {clause} "
+            "ORDER BY c.name, s.name",
+            params
         )
     return jsonify([
         {"id": r["id"], "name": r["name"],

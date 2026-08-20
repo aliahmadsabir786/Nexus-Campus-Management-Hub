@@ -17,6 +17,12 @@ from flask_login import login_required, current_user
 from db import query
 from config import TODAY
 from utils.auth import perm_required, safe_student
+from utils.context import (
+    apply_ctx,
+    assert_student_in_context,
+    assert_teacher_in_context,
+    ctx_and,
+)
 from utils.teacher_access import (
     get_teacher_assignments,
     get_assigned_students,
@@ -31,6 +37,16 @@ def _is_teacher():
 
 def _is_admin():
     return hasattr(current_user, "role") and current_user.role == "admin"
+
+
+def _ctx_students(sql, args=None):
+    """
+    Run a "SELECT ... FROM students WHERE ..." query with the caller's
+    institution filter appended.  Every attendance pool goes through here so
+    no branch can accidentally reach another campus's students.
+    """
+    ctx_sql, ctx_args = ctx_and()
+    return query(sql + ctx_sql, list(args or []) + ctx_args)
 
 
 def _attach_attendance(student_rows, date_str):
@@ -57,9 +73,9 @@ def api_teacher_students(tid):
     if _is_teacher() and current_user.id != tid:
         return jsonify({"error": "Access denied: you can only query your own students"}), 403
 
-    t = query("SELECT * FROM teachers WHERE id=%s", (tid,), one=True)
-    if not t:
-        return jsonify({"error": "Teacher not found"}), 404
+    guard = assert_teacher_in_context(tid)
+    if guard:
+        return guard
 
     date_str   = request.args.get("date", TODAY)
     class_id   = request.args.get("class_id") or request.args.get("classId")
@@ -71,6 +87,7 @@ def api_teacher_students(tid):
         args = []
         if class_id:   sql += " AND class_id=%s";   args.append(class_id)
         if section_id: sql += " AND section_id=%s"; args.append(section_id)
+        sql, args = apply_ctx(sql, args)
         sql += " ORDER BY roll_no"
         rows = query(sql, args)
     else:
@@ -120,6 +137,7 @@ def api_get_attendance():
         if cls:        sql += " AND cls=%s";        args.append(cls)
         if class_id:   sql += " AND class_id=%s";   args.append(class_id)
         if section_id: sql += " AND section_id=%s"; args.append(section_id)
+        sql, args = apply_ctx(sql, args)
         rows = query(sql, args)
 
     result = []
@@ -161,10 +179,10 @@ def api_mark_attendance():
 
     if "studentId" in data:
         sid = data["studentId"]
-        if _is_teacher():
-            err = assert_student_access(sid)
-            if err:
-                return err
+        # Context is checked for every role here (admins included).
+        err = assert_student_access(sid)
+        if err:
+            return err
         upsert(sid)
 
     elif "sectionId" in data or "section_id" in data:
@@ -179,7 +197,7 @@ def api_mark_attendance():
             if sid_int not in {a["section_id"] for a in assignments}:
                 return jsonify({"error": "Access denied: section not assigned to you"}), 403
 
-        for s in query("SELECT id FROM students WHERE section_id=%s", (sid_int,)):
+        for s in _ctx_students("SELECT id FROM students WHERE section_id=%s", [sid_int]):
             upsert(s["id"])
 
     elif "class_id" in data or "classId" in data:
@@ -203,20 +221,25 @@ def api_mark_attendance():
                     return jsonify({"error": "section_id must be an integer"}), 400
                 if sid_int not in allowed_sections:
                     return jsonify({"error": "Access denied: section not in your assigned sections"}), 403
-                pool = query("SELECT id FROM students WHERE class_id=%s AND section_id=%s", (cid_int, sid_int))
+                pool = _ctx_students(
+                    "SELECT id FROM students WHERE class_id=%s AND section_id=%s",
+                    [cid_int, sid_int])
             else:
                 ph = ",".join(["%s"] * len(allowed_sections))
-                pool = query(f"SELECT id FROM students WHERE class_id=%s AND section_id IN ({ph})",
-                             [cid_int] + allowed_sections)
+                pool = _ctx_students(
+                    f"SELECT id FROM students WHERE class_id=%s AND section_id IN ({ph})",
+                    [cid_int] + allowed_sections)
         else:
             if sid_val:
                 try:
                     sid_int = int(sid_val)
                 except (TypeError, ValueError):
                     return jsonify({"error": "section_id must be an integer"}), 400
-                pool = query("SELECT id FROM students WHERE class_id=%s AND section_id=%s", (cid_int, sid_int))
+                pool = _ctx_students(
+                    "SELECT id FROM students WHERE class_id=%s AND section_id=%s",
+                    [cid_int, sid_int])
             else:
-                pool = query("SELECT id FROM students WHERE class_id=%s", (cid_int,))
+                pool = _ctx_students("SELECT id FROM students WHERE class_id=%s", [cid_int])
         for s in pool:
             upsert(s["id"])
 
@@ -227,10 +250,11 @@ def api_mark_attendance():
             if not allowed_sections:
                 return jsonify({"error": "No assigned sections found"}), 403
             ph  = ",".join(["%s"] * len(allowed_sections))
-            sql = f"SELECT id FROM students WHERE cls=%s AND section_id IN ({ph})"
-            pool = query(sql, [data["cls"]] + allowed_sections)
+            pool = _ctx_students(
+                f"SELECT id FROM students WHERE cls=%s AND section_id IN ({ph})",
+                [data["cls"]] + allowed_sections)
         else:
-            pool = query("SELECT id FROM students WHERE cls=%s", (data["cls"],))
+            pool = _ctx_students("SELECT id FROM students WHERE cls=%s", [data["cls"]])
         for s in pool:
             upsert(s["id"])
 
@@ -248,7 +272,7 @@ def api_mark_attendance():
             args = list(allowed_sections)
             if cls_f:
                 sql += " AND cls=%s"; args.append(cls_f)
-            pool = query(sql, args)
+            pool = _ctx_students(sql, args)
         else:
             from config import SUBJECT_TO_GROUPS, SUBJECT_GROUPS
             eligible_groups = SUBJECT_TO_GROUPS.get(subj, [])
@@ -261,7 +285,7 @@ def api_mark_attendance():
                 args = list(eligible_groups)
                 if cls_f:
                     sql += " AND cls=%s"; args.append(cls_f)
-                pool = query(sql, args)
+                pool = _ctx_students(sql, args)
         for s in pool:
             upsert(s["id"])
 
@@ -278,6 +302,9 @@ def api_mark_attendance():
 @attendance_bp.route("/api/attendance/student/<sid>", methods=["GET"])
 @login_required
 def api_student_attendance(sid):
+    guard = assert_student_in_context(sid)
+    if guard:
+        return guard
     if _is_teacher():
         err = assert_student_access(sid)
         if err:

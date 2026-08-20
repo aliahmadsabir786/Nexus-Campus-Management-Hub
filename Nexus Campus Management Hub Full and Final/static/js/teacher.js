@@ -262,7 +262,12 @@ function renderTeacherDash(t){
   const eligGrps=SUBJECT_TO_GROUPS[subj]||Object.keys(SUBJECT_GROUPS).filter(g=>(SUBJECT_GROUPS[g]||[]).includes(subj));
   const myStudents=students.filter(s=>eligGrps.includes(s.subjectGroup||'Computer Science'));
 
-  // Today's present count (all campus)
+  // Classes of the CURRENT institution only — the backend already scoped
+  // /api/classes and /api/students to this session's department/campus
+  // (see contextClassCodes in context.js).
+  const dashClasses=contextClassCodes();
+
+  // Today's present count (this institution only)
   const tp=Object.values(attendance).filter(r=>r[today]==='present').length;
   // My subject students present today
   const myPresentToday=myStudents.filter(s=>attendance[s.id]?.[today]==='present').length;
@@ -271,13 +276,13 @@ function renderTeacherDash(t){
   const pendingSubs=submissions.filter(s=>myAssignments.some(a=>a.id===s.assignmentId)&&s.status==='submitted').length;
 
   // Per-class attendance (teacher's subject students only)
-  const classAttData=CLASSES.map(cls=>{const cs=myStudents.filter(s=>s.cls===cls);const pres=cs.filter(s=>attendance[s.id]?.[today]==='present').length;return cs.length?Math.round(pres/cs.length*100):0;});
+  const classAttData=dashClasses.map(cls=>{const cs=myStudents.filter(s=>s.cls===cls);const pres=cs.filter(s=>attendance[s.id]?.[today]==='present').length;return cs.length?Math.round(pres/cs.length*100):0;});
 
   // Week trend — teacher's subject students attendance per day
   const weekLabels=weekDays.map(d=>new Date(d).toLocaleDateString('en',{weekday:'short'}));
   const weekAttData=weekDays.map(d=>{const pres=myStudents.filter(s=>attendance[s.id]?.[d]==='present').length;return myStudents.length?Math.round(pres/myStudents.length*100):0;});
 
-  scheduleChart(()=>drawBarChart('tAttChart',CLASSES,[{label:'Attendance %',data:classAttData,color:T.accent}],{maxVal:100}),'tAttChart');
+  scheduleChart(()=>drawBarChart('tAttChart',dashClasses,[{label:'Attendance %',data:classAttData,color:T.accent}],{maxVal:100}),'tAttChart');
   scheduleChart(()=>drawLineChart('tWeekChart',weekLabels,[{label:'This Week Attendance %',data:weekAttData,color:T.purple}]),'tWeekChart');
 
   return `<div style="background:linear-gradient(135deg,${T.accentD},${T.accent});border-radius:18px;padding:24px 28px;margin-bottom:22px;display:flex;align-items:center;gap:18px;flex-wrap:wrap;box-shadow:0 4px 20px rgba(5,150,105,.3)">
@@ -296,7 +301,7 @@ function renderTeacherDash(t){
   </div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px">
     ${card(`${secTitle('📎 My Assignments')}<div style="display:grid;gap:8px">${myAssignments.length===0?`<div style="text-align:center;padding:20px;color:${T.muted};font-size:13px">No assignments yet</div>`:myAssignments.map(a=>{const subs=submissions.filter(s=>s.assignmentId===a.id);const pend=subs.filter(s=>s.status==='submitted').length;return `<div style="background:${T.bg};border-radius:10px;padding:12px;display:flex;justify-content:space-between;align-items:center;border-left:3px solid ${pend>0?T.yellow:T.green}"><div><div style="font-weight:700;font-size:13px">${esc(a.title)}</div><div style="font-size:11px;color:${T.muted}">${a.cls} · Due ${a.dueDate}</div></div><span style="background:${pend>0?T.yellowL:T.greenL};color:${pend>0?T.yellow:T.green};border-radius:20px;padding:2px 10px;font-weight:700;font-size:12px">${pend>0?pend+' pending':'All graded'}</span></div>`;}).join('')}</div>`)}
-    ${card(`${secTitle('📊 Subject Coverage')}<div style="display:grid;gap:10px;margin-top:4px">${CLASSES.map((cls,i)=>{const cs=myStudents.filter(s=>s.cls===cls);const pres=cs.filter(s=>attendance[s.id]?.[today]==='present').length;const pct=cs.length?Math.round(pres/cs.length*100):0;const col=pct>=80?T.green:pct>=60?T.yellow:cs.length?T.red:T.muted;return `<div><div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:5px"><span style="font-weight:700">${cls}</span><span style="color:${T.muted};font-size:11px">${cs.length} students</span><span style="color:${col};font-weight:700">${cs.length?pct+'%':'—'}</span></div>${cs.length?pbar(pct,col):`<div style="height:8px;background:${T.bg};border-radius:99px"></div>`}</div>`;}).join('')}</div>`)}
+    ${card(`${secTitle('📊 Subject Coverage')}<div style="display:grid;gap:10px;margin-top:4px">${dashClasses.length===0?dashEmpty('No classes in this institution yet'):dashClasses.map((cls,i)=>{const cs=myStudents.filter(s=>s.cls===cls);const pres=cs.filter(s=>attendance[s.id]?.[today]==='present').length;const pct=cs.length?Math.round(pres/cs.length*100):0;const col=pct>=80?T.green:pct>=60?T.yellow:cs.length?T.red:T.muted;return `<div><div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:5px"><span style="font-weight:700">${cls}</span><span style="color:${T.muted};font-size:11px">${cs.length} students</span><span style="color:${col};font-weight:700">${cs.length?pct+'%':'—'}</span></div>${cs.length?pbar(pct,col):`<div style="height:8px;background:${T.bg};border-radius:99px"></div>`}</div>`;}).join('')}</div>`)}
   </div>`;
 }
 

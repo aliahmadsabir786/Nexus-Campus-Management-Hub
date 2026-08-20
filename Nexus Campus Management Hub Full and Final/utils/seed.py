@@ -35,10 +35,22 @@ def seed_sample_passwords():
                     (generate_password_hash("1234"), s["id"]), commit=True
                 )
 
-    # Teachers (teach1 ... teach5) — fix placeholder AND wrong hashes
-    teachers = query("SELECT id, password_hash FROM teachers ORDER BY id")
-    for i, t in enumerate(teachers, 1):
-        expected_pwd = f"teach{i}"
+    # Teachers — legacy sample accounts ONLY (T001 → teach1 … T005 → teach5)
+    #
+    # IMPORTANT: this loop used to walk *every* teacher row in id order and
+    # reset password #n to "teach{n}".  Once the Intermediate campuses were
+    # added that would silently overwrite the credentials of every newly
+    # created teacher on each startup.  It is now restricted to the original
+    # sample IDs (T + digits) and derives the expected password from the ID
+    # itself instead of the row position.
+    teachers = query(
+        "SELECT id, password_hash FROM teachers WHERE id REGEXP '^T[0-9]+$' ORDER BY id"
+    )
+    for t in teachers:
+        num = int(str(t["id"])[1:])
+        if num > 5:
+            continue                      # not one of the seeded samples
+        expected_pwd   = f"teach{num}"
         is_placeholder = t["password_hash"] == PLACEHOLDER
         # Try to verify; if it fails, the hash is wrong — reset it
         try:
@@ -51,6 +63,6 @@ def seed_sample_passwords():
                 "UPDATE teachers SET password_hash=%s WHERE id=%s",
                 (generate_password_hash(expected_pwd), t["id"]), commit=True
             )
-            print(f"[seed] Fixed password for teacher {t['id']} → {expected_pwd}")
+            print(f"[seed] Fixed password for teacher {t['id']} -> {expected_pwd}")
 
     print("[seed] Sample passwords initialised.")

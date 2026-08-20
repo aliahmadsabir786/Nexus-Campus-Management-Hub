@@ -145,7 +145,7 @@ function renderModal(){
   setTimeout(()=>initTeacherClassDropdown('f-teachClassId','f-teachSectionId',null,null),0);}
 
   if(modalState==="addExam"){title="📝 Schedule Exam";content=`
-    ${fld("Exam Title","f-title",formData.title||"")}${fld("Subject","f-subject",formData.subject||SUBJECTS[0],"text",SUBJECTS)}${fld("Class","f-cls",formData.cls||"CS-A","text",CLASSES)}${fld("Date","f-date",formData.date||"","date")}${fld("Time","f-time",formData.time||"")}${fld("Duration","f-duration",formData.duration||"")}${fld("Room","f-room",formData.room||"")}${fld("Total Marks","f-totalMarks",formData.totalMarks||"100")}
+    ${fld("Exam Title","f-title",formData.title||"")}${fld("Subject","f-subject",formData.subject||SUBJECTS[0],"text",SUBJECTS)}${fld("Class","f-cls",formData.cls||"CS-A","text",contextClassCodes())}${fld("Date","f-date",formData.date||"","date")}${fld("Time","f-time",formData.time||"")}${fld("Duration","f-duration",formData.duration||"")}${fld("Room","f-room",formData.room||"")}${fld("Total Marks","f-totalMarks",formData.totalMarks||"100")}
     <button onclick="submitAddExam()" style="width:100%;background:linear-gradient(135deg,${T.accent},${T.accentD});color:#fff;border:none;border-radius:12px;padding:13px;font-size:15px;font-weight:700;cursor:pointer">Schedule Exam</button>`;}
 
   if(modalState==="addNotice"){title="📢 Post Notice";content=`
@@ -245,7 +245,7 @@ function renderModal(){
   if(modalState==="createAssignment"){
     const teacher=teachers.find(x=>x.id===currentUser?.id);
     title="📎 Create Assignment";
-    content=`${fld("Assignment Title","f-title",formData.title||"")}${fld("Subject","f-subject",formData.subject||teacher?.subject||SUBJECTS[0],"text",SUBJECTS)}${fld("Class","f-cls",formData.cls||"CS-A","text",CLASSES)}${fld("Due Date","f-dueDate",formData.dueDate||"","date")}
+    content=`${fld("Assignment Title","f-title",formData.title||"")}${fld("Subject","f-subject",formData.subject||teacher?.subject||SUBJECTS[0],"text",SUBJECTS)}${fld("Class","f-cls",formData.cls||"CS-A","text",contextClassCodes())}${fld("Due Date","f-dueDate",formData.dueDate||"","date")}
     <div style="margin-bottom:14px"><label style="font-size:11px;color:${T.muted};display:block;margin-bottom:6px;font-weight:700;text-transform:uppercase">Description / Instructions</label><textarea id="f-description" rows="4" oninput="formData.description=this.value" placeholder="Write assignment instructions here..." style="width:100%;background:${T.bg};border:1.5px solid ${T.border};border-radius:10px;padding:10px 14px;color:${T.text};font-size:13px;box-sizing:border-box;outline:none;font-family:'Plus Jakarta Sans',sans-serif;resize:vertical">${esc(formData.description||"")}</textarea></div>
     <button onclick="submitCreateAssignment()" style="width:100%;background:linear-gradient(135deg,${T.blue},#1d4ed8);color:#fff;border:none;border-radius:12px;padding:13px;font-size:15px;font-weight:700;cursor:pointer">Create Assignment</button>`;}
 

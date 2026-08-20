@@ -7,6 +7,12 @@ routes/assignments.py  —  Assignments, Submissions, Timetable, Portals
   GET/POST  /api/timetable/<tid>
   POST      /api/portal/student/<sid>
   POST      /api/portal/teacher/<tid>
+
+Institution isolation (spec §11):
+  - assignments own department_id / campus_id (they are not reliably tied to a
+    context-bearing row, see migration 001).
+  - submissions inherit context through assignment_id.
+  - timetables inherit context through teacher_id.
 """
 
 from flask import Blueprint, request, jsonify
@@ -15,6 +21,15 @@ from flask_login import login_required, current_user
 from db import query
 from config import SUBJECTS
 from utils.auth import admin_required, ts
+from utils.context import (
+    apply_ctx,
+    assert_class_in_context,
+    assert_in_context,
+    assert_student_in_context,
+    assert_teacher_in_context,
+    in_context,
+    write_context,
+)
 from utils.teacher_access import (
     get_teacher_assignments,
     get_assigned_students,
@@ -56,6 +71,9 @@ def api_get_assignments():
     if cls: sql += " AND cls=%s";     args.append(cls)
     if sub: sql += " AND subject=%s"; args.append(sub)
 
+    # Institution filter last, so no crafted cls/subject value can bypass it.
+    sql, args = apply_ctx(sql, args)
+
     rows = query(sql, args)
     return jsonify([{
         **r,
@@ -95,10 +113,22 @@ def api_create_assignment():
         class_id = int(class_id) if class_id else None
     except (TypeError, ValueError):
         class_id = None
+
+    dept_id, campus_id = write_context()
+    if not dept_id:
+        return jsonify({"error": "No institution context — please sign in again"}), 403
+
+    # A class from another campus may not be attached to this assignment.
+    if class_id:
+        guard = assert_class_in_context(class_id)
+        if guard:
+            return guard
+
     query(
         """INSERT INTO assignments
-           (id,title,subject,cls,class_id,teacher_id,teacher_name,due_date,description)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+           (id,title,subject,cls,class_id,teacher_id,teacher_name,due_date,description,
+            department_id,campus_id)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
         (aid, title,
          subject,
          data.get("cls", "CS-A"),
@@ -106,7 +136,8 @@ def api_create_assignment():
          current_user.id,
          t["name"] if t else "Admin",
          data.get("dueDate") or None,
-         data.get("description", "")),
+         data.get("description", ""),
+         dept_id, campus_id),
         commit=True
     )
     return jsonify({"success": True, "assignment": {"id": aid, "title": title}}), 201
@@ -121,9 +152,9 @@ def api_submit_assignment(aid):
     if current_user.role != "student":
         return jsonify({"error": "Only students can submit"}), 403
 
-    a = query("SELECT id FROM assignments WHERE id=%s", (aid,), one=True)
-    if not a:
-        return jsonify({"error": "Assignment not found"}), 404
+    guard = assert_in_context("assignments", aid, "Assignment")
+    if guard:
+        return guard
 
     s      = query("SELECT * FROM students WHERE id=%s", (current_user.id,), one=True)
     data   = request.get_json() or {}
@@ -146,6 +177,10 @@ def api_submit_assignment(aid):
 @assignments_bp.route("/api/assignments/<aid>/submissions", methods=["GET"])
 @login_required
 def api_get_submissions(aid):
+    # Submissions inherit their context from the parent assignment.
+    guard = assert_in_context("assignments", aid, "Assignment")
+    if guard:
+        return guard
     rows = query("SELECT * FROM submissions WHERE assignment_id=%s", (aid,))
     return jsonify([{**r, "submittedAt": str(r.get("submitted_date", ""))} for r in rows])
 
@@ -160,11 +195,16 @@ def api_grade_submission(sub_id):
     if not sub:
         return jsonify({"error": "Submission not found"}), 404
 
-    # Teacher: validate the submitting student is in their assignment
-    if current_user.role == "teacher":
-        err = assert_student_access(sub["student_id"])
-        if err:
-            return err
+    # Reported as "not found" (never 403) so submission IDs belonging to another
+    # campus cannot be probed.
+    if in_context("assignments", sub["assignment_id"]) is not True:
+        return jsonify({"error": "Submission not found"}), 404
+
+    # Teacher: validate the submitting student is in their assignment.
+    # assert_student_access() also re-checks institution context for every role.
+    err = assert_student_access(sub["student_id"])
+    if err:
+        return err
 
     data  = request.get_json() or {}
     grade = int(data.get("grade", 0))
@@ -184,6 +224,10 @@ def api_grade_submission(sub_id):
 @assignments_bp.route("/api/timetable/<tid>", methods=["GET"])
 @login_required
 def api_get_timetable(tid):
+    # Timetables hang off a teacher, so the teacher's context gates them.
+    guard = assert_teacher_in_context(tid)
+    if guard:
+        return guard
     tt = query("SELECT * FROM timetables WHERE teacher_id=%s", (tid,), one=True)
     if not tt:
         return jsonify({"error": "No timetable uploaded"}), 404
@@ -195,6 +239,10 @@ def api_get_timetable(tid):
 def api_upload_timetable(tid):
     if current_user.role == "teacher" and current_user.id != tid:
         return jsonify({"error": "Cannot upload for another teacher"}), 403
+
+    guard = assert_teacher_in_context(tid)
+    if guard:
+        return guard
 
     data = request.get_json() or {}
     query(
@@ -213,6 +261,9 @@ def api_upload_timetable(tid):
 @assignments_bp.route("/api/portal/student/<sid>", methods=["POST"])
 @admin_required
 def api_toggle_student_portal(sid):
+    guard = assert_student_in_context(sid)
+    if guard:
+        return guard
     s = query("SELECT portal FROM students WHERE id=%s", (sid,), one=True)
     if not s:
         return jsonify({"error": "Student not found"}), 404
@@ -224,6 +275,9 @@ def api_toggle_student_portal(sid):
 @assignments_bp.route("/api/portal/teacher/<tid>", methods=["POST"])
 @admin_required
 def api_toggle_teacher_portal(tid):
+    guard = assert_teacher_in_context(tid)
+    if guard:
+        return guard
     t = query("SELECT portal FROM teachers WHERE id=%s", (tid,), one=True)
     if not t:
         return jsonify({"error": "Teacher not found"}), 404

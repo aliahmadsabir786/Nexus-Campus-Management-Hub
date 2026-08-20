@@ -17,12 +17,27 @@ login_manager.login_view = "index"
 # USER MODEL
 # ================================================================
 class User(UserMixin):
-    def __init__(self, user_id, role, name, is_sub_admin=False, permissions=None):
+    """
+    Session-backed user.  `context` carries the validated institution
+    context (department + campus) resolved at login time — see
+    utils/context.py.  It is exposed as `current_user.department_id` /
+    `current_user.campus_id` so every route can scope its queries.
+    """
+
+    def __init__(self, user_id, role, name, is_sub_admin=False,
+                 permissions=None, context=None):
         self.id           = user_id
         self.role         = role
         self.name         = name
         self.is_sub_admin = is_sub_admin
         self.permissions  = permissions or []
+
+        # ── Institution context (never taken from the request body) ──
+        self.context       = context or {}
+        self.department    = self.context.get("department")       # "BS" | "INTERMEDIATE"
+        self.department_id = self.context.get("department_id")
+        self.campus        = self.context.get("campus")          # "BOYS" | "GIRLS" | None
+        self.campus_id     = self.context.get("campus_id")
 
     def can_access(self, page):
         if self.role != "admin":   return True
@@ -37,11 +52,29 @@ def load_user(user_id):
     info = session.get("user_info")
     if not info or str(info.get("id")) != str(user_id):
         return None
+    # A session without a validated context predates the department/campus
+    # split (or was tampered with).  Refuse it so the user is sent back
+    # through Department Selection → login instead of silently defaulting
+    # to some department's data.
+    ctx = info.get("context")
+    if not isinstance(ctx, dict) or not ctx.get("department_id"):
+        return None
     return User(
         info["id"], info["role"], info["name"],
         info.get("is_sub_admin", False),
-        info.get("permissions", [])
+        info.get("permissions", []),
+        context=ctx
     )
+
+
+@login_manager.unauthorized_handler
+def unauthorized():
+    """
+    The frontend is a JSON single-page app: always answer with 401 JSON
+    instead of redirecting to the HTML shell, so `fetch()` callers can
+    detect an expired/invalid session and return to Department Selection.
+    """
+    return jsonify({"error": "Authentication required", "authenticated": False}), 401
 
 
 # ================================================================

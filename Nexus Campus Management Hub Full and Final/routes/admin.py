@@ -8,6 +8,11 @@ routes/admin.py  —  Admin-only routes
   GET                  /api/reports/grades
   GET                  /api/reports/fees
   GET                  /api/system-info
+
+Everything counted or reported here is scoped to the caller's institution
+(spec §15/§16): tables that own department_id/campus_id are filtered with
+ctx_clause(), and tables that inherit context (attendance, submissions,
+complaints) are filtered through the owning table with in_context_subquery().
 """
 
 import json
@@ -18,8 +23,49 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from db import query
 from config import TODAY, SUBJECT_GROUPS, SUB_ADMIN_PERMS
 from utils.auth import admin_required, perm_required, ts
+from utils.context import (
+    apply_ctx,
+    assert_in_context,
+    ctx_clause,
+    in_context_subquery,
+    write_context,
+)
 
 admin_bp = Blueprint("admin", __name__)
+
+
+# ================================================================
+# CONTEXT-AWARE COUNTERS
+# ================================================================
+# `where` is always a literal written in this file — never user input — so it
+# is safe to interpolate.  All values still travel as bound parameters.
+
+def _ctx_count(table, where="", args=None):
+    """COUNT rows of a table that OWNS department_id / campus_id."""
+    clause, params = ctx_clause()
+    sql = f"SELECT COUNT(*) AS c FROM {table} WHERE {clause}"
+    if where:
+        sql += f" AND {where}"
+    return query(sql, params + list(args or []), one=True)["c"]
+
+
+def _child_count(table, fk, parent, where="", args=None):
+    """COUNT rows of a table that INHERITS context through fk -> parent.id."""
+    sub, params = in_context_subquery(parent)
+    sql = f"SELECT COUNT(*) AS c FROM {table} WHERE {fk} IN ({sub})"
+    if where:
+        sql += f" AND {where}"
+    return query(sql, params + list(args or []), one=True)["c"]
+
+
+def _ctx_students(cls="ALL"):
+    """Student pool for the report endpoints, always institution-filtered."""
+    sql, args = "SELECT * FROM students WHERE 1=1", []
+    if cls and cls != "ALL":
+        sql += " AND cls=%s"
+        args.append(cls)
+    sql, args = apply_ctx(sql, args)
+    return query(sql, args)
 
 
 # ================================================================
@@ -28,7 +74,14 @@ admin_bp = Blueprint("admin", __name__)
 @admin_bp.route("/api/subadmins", methods=["GET"])
 @admin_required
 def api_get_subadmins():
-    rows = query("SELECT id,name,username,permissions,portal,created_at FROM sub_admins")
+    # Sub-admins belong to the institution that created them.  Accounts with
+    # no context (legacy/global) are intentionally not listed here — they are
+    # authorised at login by authorize_user_context(allow_global=True).
+    clause, params = ctx_clause()
+    rows = query(
+        "SELECT id,name,username,permissions,portal,created_at "
+        f"FROM sub_admins WHERE {clause}", params
+    )
     return jsonify(rows)
 
 
@@ -45,13 +98,21 @@ def api_add_subadmin():
         return jsonify({"error": "All fields required"}), 400
     if username == "admin":
         return jsonify({"error": "Reserved username"}), 400
+    # Usernames stay globally unique: login resolves a sub-admin by username
+    # alone, so a duplicate across campuses would be ambiguous.
     if query("SELECT id FROM sub_admins WHERE username=%s", (username,), one=True):
         return jsonify({"error": "Username already taken"}), 400
 
+    dept_id, campus_id = write_context()
+    if not dept_id:
+        return jsonify({"error": "No institution context — please sign in again"}), 403
+
     said = "SA" + str(ts())
     query(
-        "INSERT INTO sub_admins (id,name,username,password_hash,permissions) VALUES (%s,%s,%s,%s,%s)",
-        (said, name, username, generate_password_hash(password), json.dumps(perms)),
+        "INSERT INTO sub_admins (id,name,username,password_hash,permissions,"
+        "department_id,campus_id) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+        (said, name, username, generate_password_hash(password), json.dumps(perms),
+         dept_id, campus_id),
         commit=True
     )
     return jsonify({"success": True, "id": said}), 201
@@ -60,9 +121,9 @@ def api_add_subadmin():
 @admin_bp.route("/api/subadmins/<said>", methods=["PUT"])
 @admin_required
 def api_edit_subadmin(said):
-    sa = query("SELECT * FROM sub_admins WHERE id=%s", (said,), one=True)
-    if not sa:
-        return jsonify({"error": "Sub-admin not found"}), 404
+    guard = assert_in_context("sub_admins", said, "Sub-admin")
+    if guard:
+        return guard
 
     data       = request.get_json() or {}
     sets, args = [], []
@@ -84,9 +145,9 @@ def api_edit_subadmin(said):
 @admin_bp.route("/api/subadmins/<said>", methods=["DELETE"])
 @admin_required
 def api_delete_subadmin(said):
-    sa = query("SELECT id FROM sub_admins WHERE id=%s", (said,), one=True)
-    if not sa:
-        return jsonify({"error": "Sub-admin not found"}), 404
+    guard = assert_in_context("sub_admins", said, "Sub-admin")
+    if guard:
+        return guard
     query("DELETE FROM sub_admins WHERE id=%s", (said,), commit=True)
     return jsonify({"success": True})
 
@@ -94,6 +155,9 @@ def api_delete_subadmin(said):
 @admin_bp.route("/api/subadmins/<said>/toggle", methods=["POST"])
 @admin_required
 def api_toggle_subadmin(said):
+    guard = assert_in_context("sub_admins", said, "Sub-admin")
+    if guard:
+        return guard
     sa = query("SELECT portal FROM sub_admins WHERE id=%s", (said,), one=True)
     if not sa:
         return jsonify({"error": "Sub-admin not found"}), 404
@@ -135,31 +199,26 @@ def api_change_admin_password():
 @admin_bp.route("/api/dashboard", methods=["GET"])
 @login_required
 def api_dashboard():
-    def count(table, where=""):
-        sql = f"SELECT COUNT(*) as c FROM {table}"
-        if where: sql += f" WHERE {where}"
-        return query(sql, one=True)["c"]
-
-    total_s = count("students")
-    present = query(
-        "SELECT COUNT(*) as c FROM attendance WHERE date=%s AND status='present'",
-        (TODAY,), one=True
-    )["c"]
+    total_s = _ctx_count("students")
+    present = _child_count("attendance", "student_id", "students",
+                           "date=%s AND status='present'", [TODAY])
 
     return jsonify({
         "totalStudents":    total_s,
-        "totalTeachers":    count("teachers"),
+        "totalTeachers":    _ctx_count("teachers"),
         "presentToday":     present,
         "absentToday":      total_s - present,
-        "feePaid":          count("students", "fee_status='paid'"),
-        "feePending":       count("students", "fee_status='pending'"),
-        "feeOverdue":       count("students", "fee_status='overdue'"),
-        "totalAssignments": count("assignments"),
-        "pendingGrading":   count("submissions", "status='submitted'"),
-        "totalComplaints":  count("complaints"),
-        "totalExams":       count("exams"),
-        "totalNotices":     count("notices"),
-        "subAdmins":        count("sub_admins"),
+        "feePaid":          _ctx_count("students", "fee_status='paid'"),
+        "feePending":       _ctx_count("students", "fee_status='pending'"),
+        "feeOverdue":       _ctx_count("students", "fee_status='overdue'"),
+        "totalAssignments": _ctx_count("assignments"),
+        "pendingGrading":   _child_count("submissions", "assignment_id", "assignments",
+                                         "status='submitted'"),
+        "totalComplaints":  _child_count("complaints", "student_id", "students"),
+        "totalExams":       _ctx_count("exams"),
+        "totalNotices":     _ctx_count("notices"),
+        "subAdmins":        _ctx_count("sub_admins"),
+        "totalClasses":     _ctx_count("classes"),
     })
 
 
@@ -169,9 +228,7 @@ def api_dashboard():
 @admin_bp.route("/api/reports/attendance", methods=["GET"])
 @perm_required("reports")
 def api_report_attendance():
-    cls  = request.args.get("cls", "ALL")
-    pool = query("SELECT * FROM students") if cls == "ALL" \
-           else query("SELECT * FROM students WHERE cls=%s", (cls,))
+    pool = _ctx_students(request.args.get("cls", "ALL"))
 
     result = []
     for s in pool:
@@ -194,9 +251,7 @@ def api_report_attendance():
 @admin_bp.route("/api/reports/grades", methods=["GET"])
 @perm_required("reports")
 def api_report_grades():
-    cls  = request.args.get("cls", "ALL")
-    pool = query("SELECT * FROM students") if cls == "ALL" \
-           else query("SELECT * FROM students WHERE cls=%s", (cls,))
+    pool = _ctx_students(request.args.get("cls", "ALL"))
 
     result = []
     for s in pool:
@@ -225,7 +280,7 @@ def api_report_grades():
 @admin_bp.route("/api/reports/fees", methods=["GET"])
 @perm_required("reports")
 def api_report_fees():
-    pool = query("SELECT * FROM students")
+    pool = _ctx_students(request.args.get("cls", "ALL"))
     return jsonify([{
         "id":        s["id"],
         "name":      s["name"],
@@ -238,13 +293,11 @@ def api_report_fees():
 @admin_bp.route("/api/system-info", methods=["GET"])
 @admin_required
 def api_system_info():
-    def count(table):
-        return query(f"SELECT COUNT(*) as c FROM {table}", one=True)["c"]
     return jsonify({
-        "totalStudents":    count("students"),
-        "totalTeachers":    count("teachers"),
-        "totalAssignments": count("assignments"),
-        "totalSubmissions": count("submissions"),
-        "subAdmins":        count("sub_admins"),
-        "complaints":       count("complaints"),
+        "totalStudents":    _ctx_count("students"),
+        "totalTeachers":    _ctx_count("teachers"),
+        "totalAssignments": _ctx_count("assignments"),
+        "totalSubmissions": _child_count("submissions", "assignment_id", "assignments"),
+        "subAdmins":        _ctx_count("sub_admins"),
+        "complaints":       _child_count("complaints", "student_id", "students"),
     })

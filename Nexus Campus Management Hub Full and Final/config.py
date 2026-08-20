@@ -12,6 +12,52 @@ SESSION_PERMANENT      = True
 PERMANENT_SESSION_LIFETIME = timedelta(hours=8)
 
 # ================================================================
+# INSTITUTION / CONTEXT CONSTANTS
+#
+# NCMH
+#  ├── BS DEPARTMENT            (independent — one implicit campus)
+#  └── INTERMEDIATE DEPARTMENT
+#        ├── BOYS CAMPUS
+#        └── GIRLS CAMPUS
+#
+# These are *codes* only.  The authoritative records live in the
+# `departments` / `campuses` tables (migrations/001_departments_campuses.sql);
+# nothing here is ever trusted as an access decision — see utils/context.py.
+# ================================================================
+INSTITUTION_NAME = "NEXus Solution"
+
+DEPT_BS    = "BS"       # departments.code for the BS department
+DEPT_INTER = "INTER"    # departments.code for the Intermediate department
+
+CAMPUS_BS_MAIN = "BS-MAIN"
+CAMPUS_BOYS    = "BOYS"
+CAMPUS_GIRLS   = "GIRLS"
+
+# Departments that MUST have a campus chosen before login.
+DEPARTMENTS_REQUIRING_CAMPUS = [DEPT_INTER]
+
+# Logo assets — configurable file paths, never inline/base64 images.
+# A department/campus row may override these through its `logo_path`
+# column; this map is the fallback when that column is NULL.
+LOGO_DIR = "/static/assets/logos"
+DEFAULT_LOGOS = {
+    DEPT_BS:         f"{LOGO_DIR}/bs-logo.png",
+    DEPT_INTER:      f"{LOGO_DIR}/intermediate-logo.png",
+    CAMPUS_BS_MAIN:  f"{LOGO_DIR}/bs-logo.png",
+    CAMPUS_BOYS:     f"{LOGO_DIR}/boys-logo.png",
+    CAMPUS_GIRLS:    f"{LOGO_DIR}/girls-logo.png",
+}
+
+# Prefixes used when generating new record IDs per context.
+# BS keeps the legacy "S###" / "T###" scheme so existing IDs, links and
+# saved credentials keep working; Intermediate gets clearly distinct IDs.
+ID_PREFIXES = {
+    (DEPT_BS,    None):           {"students": "S",       "teachers": "T"},
+    (DEPT_INTER, CAMPUS_BOYS):    {"students": "INT-B-",  "teachers": "ITB-"},
+    (DEPT_INTER, CAMPUS_GIRLS):   {"students": "INT-G-",  "teachers": "ITG-"},
+}
+
+# ================================================================
 # ACADEMIC CONSTANTS
 # ================================================================
 CLASSES = ["CS-A", "CS-B", "BBA-A", "BBA-B"]

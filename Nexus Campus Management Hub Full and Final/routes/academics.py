@@ -7,6 +7,10 @@ routes/academics.py  —  Grades, Exams, Notices, Complaints
   GET/POST       /api/notices
   DELETE         /api/notices/<nid>
   GET/POST       /api/complaints
+
+Grades and complaints inherit their institution context from the student
+they belong to; exams and notices own context columns because they are not
+reliably linked to a context-bearing row (see migration 001).
 """
 
 from flask import Blueprint, request, jsonify
@@ -15,6 +19,14 @@ from flask_login import login_required, current_user
 from db import query
 from config import SUBJECTS, TODAY
 from utils.auth import perm_required, next_id, ts
+from utils.context import (
+    apply_ctx,
+    assert_in_context,
+    assert_student_in_context,
+    ctx_clause,
+    in_context_subquery,
+    write_context,
+)
 from utils.teacher_access import (
     get_assigned_students,
     assert_student_access,
@@ -55,6 +67,7 @@ def api_get_grades():
         if cls:        sql += " AND cls=%s";        args.append(cls)
         if class_id:   sql += " AND class_id=%s";   args.append(class_id)
         if section_id: sql += " AND section_id=%s"; args.append(section_id)
+        sql, args = apply_ctx(sql, args)
         pool = query(sql, args)
 
     result = {}
@@ -74,6 +87,9 @@ def api_get_grades():
 @academics_bp.route("/api/grades/<sid>", methods=["GET"])
 @login_required
 def api_get_student_grades(sid):
+    guard = assert_student_in_context(sid)
+    if guard:
+        return guard
     if current_user.role == "teacher":
         err = assert_student_access(sid)
         if err:
@@ -97,6 +113,12 @@ def api_update_grade():
     sub  = data.get("subject")
     if not sid or not sub:
         return jsonify({"error": "studentId and subject required"}), 400
+
+    # Grades are written against a student, so the student's context decides
+    # whether this caller may touch the row at all.
+    guard = assert_student_in_context(sid)
+    if guard:
+        return guard
 
     # Teacher: validate the student is in an assigned class/section
     # AND the subject matches one of their assigned subjects
@@ -136,7 +158,11 @@ def api_update_grade():
 @login_required
 def api_get_exams():
     cls = request.args.get("cls", "")
-    rows = query("SELECT * FROM exams WHERE cls=%s", (cls,)) if cls else query("SELECT * FROM exams")
+    clause, params = ctx_clause()
+    if cls:
+        rows = query(f"SELECT * FROM exams WHERE cls=%s AND {clause}", [cls] + params)
+    else:
+        rows = query(f"SELECT * FROM exams WHERE {clause}", params)
     return jsonify([{**r, "date": str(r.get("exam_date", ""))} for r in rows])
 
 
@@ -148,10 +174,15 @@ def api_add_exam():
     if not title:
         return jsonify({"error": "Title required"}), 400
 
+    dept_id, campus_id = write_context()
+    if not dept_id:
+        return jsonify({"error": "No institution context — please sign in again"}), 403
+
     new_id = next_id("exams", "E")
     query(
-        """INSERT INTO exams (id,title,subject,cls,exam_date,exam_time,duration,room,total_marks)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+        """INSERT INTO exams (id,title,subject,cls,exam_date,exam_time,duration,room,total_marks,
+                              department_id,campus_id)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
         (new_id, title,
          data.get("subject", SUBJECTS[0]),
          data.get("cls", "CS-A"),
@@ -159,7 +190,8 @@ def api_add_exam():
          data.get("time", "09:00 AM"),
          data.get("duration", "3 hours"),
          data.get("room", ""),
-         int(data.get("totalMarks", 100))),
+         int(data.get("totalMarks", 100)),
+         dept_id, campus_id),
         commit=True
     )
     return jsonify({"success": True, "exam": {"id": new_id, "title": title}}), 201
@@ -168,9 +200,9 @@ def api_add_exam():
 @academics_bp.route("/api/exams/<eid>", methods=["DELETE"])
 @perm_required("exams")
 def api_delete_exam(eid):
-    e = query("SELECT id FROM exams WHERE id=%s", (eid,), one=True)
-    if not e:
-        return jsonify({"error": "Exam not found"}), 404
+    guard = assert_in_context("exams", eid, "Exam")
+    if guard:
+        return guard
     query("DELETE FROM exams WHERE id=%s", (eid,), commit=True)
     return jsonify({"success": True})
 
@@ -181,7 +213,8 @@ def api_delete_exam(eid):
 @academics_bp.route("/api/notices", methods=["GET"])
 @login_required
 def api_get_notices():
-    rows = query("SELECT * FROM notices ORDER BY created_date DESC")
+    clause, params = ctx_clause()
+    rows = query(f"SELECT * FROM notices WHERE {clause} ORDER BY created_date DESC", params)
     return jsonify([{**r, "date": str(r.get("created_date", ""))} for r in rows])
 
 
@@ -192,10 +225,17 @@ def api_add_notice():
     title = data.get("title", "").strip()
     if not title:
         return jsonify({"error": "Title required"}), 400
+
+    dept_id, campus_id = write_context()
+    if not dept_id:
+        return jsonify({"error": "No institution context — please sign in again"}), 403
+
     nid = ts()
     query(
-        "INSERT INTO notices (id,title,type,author) VALUES (%s,%s,%s,%s)",
-        (nid, title, data.get("type", "academic"), data.get("author", "Admin")),
+        "INSERT INTO notices (id,title,type,author,department_id,campus_id) "
+        "VALUES (%s,%s,%s,%s,%s,%s)",
+        (nid, title, data.get("type", "academic"), data.get("author", "Admin"),
+         dept_id, campus_id),
         commit=True
     )
     return jsonify({"success": True, "notice": {"id": nid, "title": title}}), 201
@@ -204,9 +244,9 @@ def api_add_notice():
 @academics_bp.route("/api/notices/<int:nid>", methods=["DELETE"])
 @perm_required("notices")
 def api_delete_notice(nid):
-    n = query("SELECT id FROM notices WHERE id=%s", (nid,), one=True)
-    if not n:
-        return jsonify({"error": "Notice not found"}), 404
+    guard = assert_in_context("notices", nid, "Notice")
+    if guard:
+        return guard
     query("DELETE FROM notices WHERE id=%s", (nid,), commit=True)
     return jsonify({"success": True})
 
@@ -218,7 +258,12 @@ def api_delete_notice(nid):
 @login_required
 def api_get_complaints():
     if current_user.role == "admin":
-        rows = query("SELECT * FROM complaints ORDER BY created_date DESC")
+        # complaints inherit context from the student they are filed against
+        sub, params = in_context_subquery("students")
+        rows = query(
+            f"SELECT * FROM complaints WHERE student_id IN ({sub}) "
+            "ORDER BY created_date DESC", params
+        )
     elif current_user.role == "teacher":
         rows = query("SELECT * FROM complaints WHERE teacher_id=%s", (current_user.id,))
     else:
@@ -237,6 +282,10 @@ def api_add_complaint():
     msg  = data.get("message", "").strip()
     if not sid or not msg:
         return jsonify({"error": "studentId and message required"}), 400
+
+    guard = assert_student_in_context(sid)
+    if guard:
+        return guard
 
     s = query("SELECT * FROM students WHERE id=%s", (sid,), one=True)
     t = query("SELECT * FROM teachers WHERE id=%s", (current_user.id,), one=True)

@@ -5,6 +5,10 @@ routes/students.py  —  Student CRUD routes
   POST   /api/students
   PUT    /api/students/<sid>
   DELETE /api/students/<sid>
+
+ONE implementation serves BS, Intermediate/Boys and Intermediate/Girls.
+Which rows a request may see or touch comes from the authenticated session
+via utils.context — never from the request itself (spec §7, §9, §15).
 """
 
 import base64
@@ -16,7 +20,16 @@ from werkzeug.security import generate_password_hash
 
 from db import query
 from config import TODAY
-from utils.auth import perm_required, next_id, safe_student
+from utils.auth import perm_required, safe_student
+from utils.context import (
+    apply_ctx,
+    assert_class_in_context,
+    assert_section_in_context,
+    assert_student_in_context,
+    ctx_and,
+    next_context_id,
+    write_context,
+)
 
 # Max photo size: 1 MB as base64 string (~1.37 MB encoded).
 # base64 of 1MB binary = ~1.37MB string. We accept up to 2MB binary → ~2.74MB base64.
@@ -66,6 +79,9 @@ def api_get_students():
         args += [f"%{search}%", f"%{search}%"]
     if cls:
         sql += " AND cls=%s"; args.append(cls)
+    # Institution isolation — resolved from the session, appended last so it
+    # can never be bypassed by a crafted search/cls parameter.
+    sql, args = apply_ctx(sql, args)
     rows = query(sql, args)
     return jsonify([safe_student(s) for s in rows])
 
@@ -73,6 +89,9 @@ def api_get_students():
 @students_bp.route("/api/students/<sid>", methods=["GET"])
 @login_required
 def api_get_student(sid):
+    guard = assert_student_in_context(sid)
+    if guard:
+        return guard
     s = query("SELECT * FROM students WHERE id=%s", (sid,), one=True)
     if not s:
         return jsonify({"error": "Student not found"}), 404
@@ -96,16 +115,26 @@ def api_add_student():
     if photo_err:
         return jsonify({"error": photo_err}), 400
 
+    # Rows are always filed under the creator's own context.
+    dept_id, campus_id = write_context()
+    if not dept_id:
+        return jsonify({"error": "No institution context — please sign in again"}), 403
+
     pwd    = data.get("password", "1234") or "1234"
-    new_id = next_id("students", "S")
+    new_id = next_context_id("students", "students")
     cls    = data.get("cls", "CS-A")
 
-    # Auto generate roll number based on class — next available number in that class
+    # Auto generate roll number based on class — next available number in that
+    # class WITHIN this context, so Boys and Girls number independently.
     provided_roll = data.get("rollNo", "").strip()
     if provided_roll:
         roll_no = provided_roll
     else:
-        existing = query("SELECT roll_no FROM students WHERE cls=%s AND roll_no IS NOT NULL AND roll_no != ''", (cls,))
+        ctx_sql, ctx_args = ctx_and()
+        existing = query(
+            "SELECT roll_no FROM students "
+            "WHERE cls=%s AND roll_no IS NOT NULL AND roll_no != ''" + ctx_sql,
+            [cls] + ctx_args)
         nums = []
         for r in existing:
             try: nums.append(int(r["roll_no"]))
@@ -115,12 +144,23 @@ def api_add_student():
     class_id   = data.get("classId") or None
     section_id = data.get("sectionId") or None
 
+    # The class/section a new student is placed in must belong to this context.
+    if class_id:
+        guard = assert_class_in_context(class_id)
+        if guard:
+            return guard
+    if section_id:
+        guard = assert_section_in_context(section_id)
+        if guard:
+            return guard
+
     try:
         query(
             """INSERT INTO students
                (id,name,cls,subject_group,roll_no,phone,guardian_phone,
-                email,fee_status,dob,password_hash,portal,photo,class_id,section_id)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'active',%s,%s,%s)""",
+                email,fee_status,dob,password_hash,portal,photo,class_id,section_id,
+                department_id,campus_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'active',%s,%s,%s,%s,%s)""",
             (new_id, name,
              cls,
              data.get("subjectGroup", "Computer Science"),
@@ -133,7 +173,9 @@ def api_add_student():
              generate_password_hash(pwd),
              photo,
              class_id,
-             section_id),
+             section_id,
+             dept_id,
+             campus_id),
             commit=True
         )
     except Exception as e:
@@ -160,9 +202,10 @@ def api_add_student():
 @students_bp.route("/api/students/<sid>", methods=["PUT"])
 @perm_required("students")
 def api_edit_student(sid):
-    s = query("SELECT id FROM students WHERE id=%s", (sid,), one=True)
-    if not s:
-        return jsonify({"error": "Student not found"}), 404
+    # Out-of-context students report as "not found" so IDs cannot be probed.
+    guard = assert_student_in_context(sid)
+    if guard:
+        return guard
 
     try:
         data = request.get_json(force=True, silent=True) or {}
@@ -175,6 +218,17 @@ def api_edit_student(sid):
         if photo_err:
             return jsonify({"error": photo_err}), 400
         data["photo"] = photo
+
+    # A student may only be moved into a class/section of their OWN
+    # institution — otherwise an edit could smuggle a row across campuses.
+    if data.get("classId"):
+        guard = assert_class_in_context(data["classId"])
+        if guard:
+            return guard
+    if data.get("sectionId"):
+        guard = assert_section_in_context(data["sectionId"])
+        if guard:
+            return guard
 
     fields = {
         "name": "name", "cls": "cls", "subjectGroup": "subject_group",
@@ -207,8 +261,8 @@ def api_edit_student(sid):
 @students_bp.route("/api/students/<sid>", methods=["DELETE"])
 @perm_required("students")
 def api_delete_student(sid):
-    s = query("SELECT id FROM students WHERE id=%s", (sid,), one=True)
-    if not s:
-        return jsonify({"error": "Student not found"}), 404
+    guard = assert_student_in_context(sid)
+    if guard:
+        return guard
     query("DELETE FROM students WHERE id=%s", (sid,), commit=True)
     return jsonify({"success": True})

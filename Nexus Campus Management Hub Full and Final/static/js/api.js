@@ -161,6 +161,10 @@ async function loadAllDataFromDB() {
 }
 
 // ── LOGIN — DB se ──
+// The department/campus chosen on the selection screens travels with the
+// credentials as a *claim*.  /api/login validates it against the
+// departments/campuses tables and against the account's own institution,
+// then answers with the authoritative context we display (spec §13/§14).
 async function doLogin() {
   const uid = (document.getElementById('l-uid')?.value || '').trim();
   const pwd = (document.getElementById('l-pwd')?.value || '').trim();
@@ -169,7 +173,11 @@ async function doLogin() {
     const res = await fetch('/api/login', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({role: loginRole, username: uid, password: pwd})
+      body: JSON.stringify({
+        role: loginRole, username: uid, password: pwd,
+        department: appContext.departmentCode || appContext.department,
+        campus:     appContext.campus,
+      })
     });
     const data = await res.json();
     if (data.success) {
@@ -178,8 +186,11 @@ async function doLogin() {
         role: data.user.role,
         name: data.user.name,
         isSubAdmin: data.user.isSubAdmin || false,
-        permissions: data.user.permissions || []
+        permissions: data.user.permissions || [],
+        context: data.user.context || null
       };
+      hydrateContext(data.user.context);
+      clearContextCaches();
       currentPage = 'dashboard';
       render();
       await loadAllDataFromDB();
@@ -194,9 +205,32 @@ async function doLogin() {
 }
 
 // ── LOGOUT ──
+// Clears the session server-side and drops every cached record, then
+// returns to the Department Selection screen (spec §19).
 async function doLogout() {
   try { await fetch('/api/logout', {method:'POST'}); } catch(e) {}
-  currentUser = null; loginErr = ''; loginRole = 'admin'; render();
+  currentUser = null; loginErr = ''; loginRole = 'admin';
+  clearContextCaches();
+  resetContext();
+  render();
+}
+
+/**
+ * Forget everything loaded for the previous institution so a new context
+ * can never render another campus's cached rows.
+ */
+function clearContextCaches() {
+  students = []; teachers = []; exams = []; notices = []; complaints = [];
+  assignments = []; submissions = []; subAdmins = [];
+  grades = {}; attendance = {}; timetables = {};
+  feeVouchers = {}; feeInstallments = {};
+  dbClasses = []; dbSections = [];
+  window.dbClasses = dbClasses; window.dbSections = dbSections;
+  _cachedClasses = null;
+  _cachedSectionsByClass = {};
+  attFilter.class_id = null; attFilter.section_id = null;
+  gradesFilter.class_id = null;
+  reportFilter.class_id = null;
 }
 
 // ── ADD STUDENT ──
@@ -687,11 +721,15 @@ window.addEventListener('DOMContentLoaded', async () => {
     const res = await fetch('/api/me');
     if (res.ok) {
       const data = await res.json();
-      currentUser = {id: data.id, role: data.role, name: data.name, isSubAdmin: data.isSubAdmin, permissions: data.permissions || []};
+      currentUser = {id: data.id, role: data.role, name: data.name, isSubAdmin: data.isSubAdmin, permissions: data.permissions || [], context: data.context || null};
+      // Restore the institution context from the session, never from
+      // localStorage — the server is the only authority (spec §13).
+      hydrateContext(data.context);
       currentPage = 'dashboard';
       render();
       await loadAllDataFromDB();
     } else {
+      // No session → Department Selection (context.js fetches the tree).
       render();
     }
   } catch(e) {

@@ -55,22 +55,55 @@ function renderNoAccess(){
 }
 
 // ─── ADMIN DASHBOARD ───
+
+/** Small empty state for a dashboard panel with nothing to plot yet. */
+function dashEmpty(msg){
+  return `<div style="text-align:center;padding:22px 8px;color:var(--muted);font-size:12.5px">${esc(msg)}</div>`;
+}
+
+/**
+ * Dashboard context banner (spec §16).
+ * Every figure on this page comes from one institution only, so the dashboard
+ * names that institution instead of implying campus-wide totals. Built from
+ * contextTitle() rather than a hard-coded label, so the same renderer serves
+ * BS, Intermediate/Boys and Intermediate/Girls.
+ */
+function dashContextBanner(){
+  const inst = appContext.title || appContext.departmentName || '';
+  if (!inst) return '';
+  return `<div class="dash-context">
+    <div class="dash-context-mark">${appContext.campus?'🏫':'🎓'}</div>
+    <div style="flex:1;min-width:0">
+      <div class="dash-context-title">${esc(contextTitle())}</div>
+      <div class="dash-context-sub">Every figure on this page is limited to this institution's records.</div>
+    </div>
+    <div class="dash-context-pill">Academic Year 2025–26</div>
+  </div>`;
+}
+
 function renderAdminDash(){
   const tp=Object.values(attendance).filter(r=>r[today]==="present").length;
   const pc=students.filter(s=>s.feeStatus==="paid").length;
   const totalSubs=submissions.length;
   const pendingGrade=submissions.filter(s=>s.status==="submitted").length;
-  const classAttData=CLASSES.map(cls=>{const cs=students.filter(s=>s.cls===cls);const pres=cs.filter(s=>attendance[s.id]?.[today]==="present").length;return cs.length?Math.round(pres/cs.length*100):0;});
-  const classGradeData=CLASSES.map(cls=>{const cs=students.filter(s=>s.cls===cls);const avgs=cs.map(s=>{const tots=SUBJECTS.slice(0,5).map(sub=>grades[s.id]?.[sub]?.total||0);return tots.length?Math.round(tots.reduce((a,b)=>a+b,0)/tots.length):0;});return avgs.length?Math.round(avgs.reduce((a,b)=>a+b,0)/avgs.length):0;});
+  // Classes of the CURRENT institution only: dbClasses comes from
+  // /api/classes/dropdown, which the backend already scopes to the session's
+  // department/campus (see contextClassCodes in context.js).
+  const dashClasses=contextClassCodes();
+  const classAttData=dashClasses.map(cls=>{const cs=students.filter(s=>s.cls===cls);const pres=cs.filter(s=>attendance[s.id]?.[today]==="present").length;return cs.length?Math.round(pres/cs.length*100):0;});
+  const classGradeData=dashClasses.map(cls=>{const cs=students.filter(s=>s.cls===cls);const avgs=cs.map(s=>{const tots=SUBJECTS.slice(0,5).map(sub=>grades[s.id]?.[sub]?.total||0);return tots.length?Math.round(tots.reduce((a,b)=>a+b,0)/tots.length):0;});return avgs.length?Math.round(avgs.reduce((a,b)=>a+b,0)/avgs.length):0;});
   const campusAtt=weekDays.map(d=>{const pres=students.filter(s=>attendance[s.id]?.[d]==="present").length;return students.length?Math.round(pres/students.length*100):0;});
   const dayLabels=weekDays.map(d=>new Date(d).toLocaleDateString("en",{weekday:"short"}));
   scheduleChart(()=>drawLineChart('campusAttChart',dayLabels,[{label:'Campus Attendance %',data:campusAtt,color:T.accent}]),'campusAttChart');
-  scheduleChart(()=>drawBarChart('classCompChart',CLASSES,[{label:'Attendance %',data:classAttData,color:T.accent},{label:'Avg Grade %',data:classGradeData.map(v=>Math.round((v/175)*100)),color:T.purple}],{maxVal:100}),'classCompChart');
+  scheduleChart(()=>drawBarChart('classCompChart',dashClasses,[{label:'Attendance %',data:classAttData,color:T.accent},{label:'Avg Grade %',data:classGradeData.map(v=>Math.round((v/175)*100)),color:T.purple}],{maxVal:100}),'classCompChart');
+  const clsLabel=dashClasses.length?`${dashClasses.length} ${dashClasses.length===1?"class":"classes"}`:"No classes yet";
   return `
   ${currentUser.isSubAdmin?`<div style="background:${T.yellowL};border:1px solid #fcd34d;border-radius:12px;padding:12px 18px;margin-bottom:18px;display:flex;gap:10px;align-items:center"><span style="font-size:18px">👥</span><div><strong style="color:${T.yellow}">Sub-Admin Access:</strong><span style="font-size:13px;color:${T.yellow};margin-left:6px">Permissions: ${(currentUser.permissions||[]).join(", ") || "None"}</span></div></div>`:""}
+  <!-- Institution the figures below belong to (spec §16) -->
+  ${dashContextBanner()}
   <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:14px;margin-bottom:24px">
-    ${statCard("🎓",students.length,"Total Students",T.accent,"All classes")}
-    ${statCard("👨‍🏫",teachers.length,"Teachers",T.purple,"5 departments")}
+    ${statCard("🎓",students.length,"Total Students",T.accent,clsLabel)}
+    ${statCard("👨‍🏫",teachers.length,"Teachers",T.purple,`${teachers.filter(t=>t.portal!=="blocked").length} active`)}
     ${statCard("✅",tp,"Present Today",T.green,`${students.length-tp} absent`)}
     ${statCard("💳",`${pc}/${students.length}`,"Fee Paid",T.yellow,`${students.filter(s=>s.feeStatus==="overdue").length} overdue`)}
     ${statCard("📎",assignments.length,"Assignments",T.blue,`${pendingGrade} pending grade`)}
@@ -81,8 +114,8 @@ function renderAdminDash(){
     ${card(`${secTitle("📈 Class Attendance vs Grades Today")}<canvas id="classCompChart" width="480" height="200" style="width:100%;height:200px"></canvas>`)}
   </div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px">
-    ${card(`${secTitle("🏫 Attendance by Class (Today)")}<div style="display:grid;gap:10px;margin-top:4px">${CLASSES.map((cls,i)=>{const pct=classAttData[i];const col=pct>=80?T.green:pct>=60?T.yellow:T.red;return `<div><div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:5px"><span style="font-weight:700">${cls}</span><span style="color:${col};font-weight:700">${pct}%</span></div>${pbar(pct,col)}</div>`;}).join("")}</div>`)}
-    ${card(`${secTitle("📚 Average Grade by Class")}<div style="display:grid;gap:10px;margin-top:4px">${CLASSES.map((cls,i)=>{const avg=classGradeData[i];const col=gradeColor(avg);return `<div><div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:5px"><span style="font-weight:700">${cls}</span><span style="color:${col};font-weight:700">${avg}/175 · ${gradeLabel(avg)}</span></div>${pbar((avg/175)*100,col)}</div>`;}).join("")}</div>`)}
+    ${card(`${secTitle("🏫 Attendance by Class (Today)")}<div style="display:grid;gap:10px;margin-top:4px">${dashClasses.length?dashClasses.map((cls,i)=>{const pct=classAttData[i];const col=pct>=80?T.green:pct>=60?T.yellow:T.red;return `<div><div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:5px"><span style="font-weight:700">${esc(cls)}</span><span style="color:${col};font-weight:700">${pct}%</span></div>${pbar(pct,col)}</div>`;}).join(""):dashEmpty("No classes in this institution yet")}</div>`)}
+    ${card(`${secTitle("📚 Average Grade by Class")}<div style="display:grid;gap:10px;margin-top:4px">${dashClasses.length?dashClasses.map((cls,i)=>{const avg=classGradeData[i];const col=gradeColor(avg);return `<div><div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:5px"><span style="font-weight:700">${esc(cls)}</span><span style="color:${col};font-weight:700">${avg}/175 · ${gradeLabel(avg)}</span></div>${pbar((avg/175)*100,col)}</div>`;}).join(""):dashEmpty("No classes in this institution yet")}</div>`)}
   </div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px">
     ${card(`${secTitle("📢 Recent Notices")}${notices.slice(0,4).map(n=>`<div style="border-bottom:1px solid ${T.border};padding-bottom:10px;margin-bottom:10px"><div style="font-size:13px;font-weight:600;margin-bottom:5px">${esc(n.title)}</div><div style="display:flex;gap:8px">${badge(n.type)}<span style="font-size:11px;color:${T.muted}">${n.date}</span></div></div>`).join("")}`)}
@@ -278,7 +311,7 @@ function renderGrades(editable){
   const cs=students.filter(s=>s.cls===gradesFilter.cls);
   // Collect all unique subjects for the displayed students
   const groupSubjects=["English","Urdu","Islamiyat","Biology","Physics","Chemistry","Mathematics","Computer Science"];
-  return `<div style="margin-bottom:16px"><select onchange="gradesFilter.cls=this.value;refreshContent()" style="background:#fff;border:1.5px solid ${T.border};border-radius:10px;padding:9px 14px;color:${T.text};font-size:13px;outline:none;font-family:'Plus Jakarta Sans',sans-serif">${CLASSES.map(c=>`<option value="${c}" ${c===gradesFilter.cls?"selected":""}>${c}</option>`).join("")}</select></div>
+  return `<div style="margin-bottom:16px"><select onchange="gradesFilter.cls=this.value;refreshContent()" style="background:#fff;border:1.5px solid ${T.border};border-radius:10px;padding:9px 14px;color:${T.text};font-size:13px;outline:none;font-family:'Plus Jakarta Sans',sans-serif">${contextClassCodes().map(c=>`<option value="${c}" ${c===gradesFilter.cls?"selected":""}>${c}</option>`).join("")}</select></div>
   ${card(`<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;min-width:600px">
     <thead><tr style="border-bottom:2px solid ${T.border}">
       <th style="padding:11px 14px;text-align:left;font-size:11px;font-weight:700;color:${T.muted};text-transform:uppercase;background:${T.bg2}">Student</th>
@@ -324,7 +357,7 @@ function renderAdminFees(){
       <label style="font-size:10px;color:${T.muted};display:block;margin-bottom:4px;font-weight:700;text-transform:uppercase">Class</label>
       <select onchange="feeFilter.cls=this.value;refreshContent()" style="background:${T.bg};border:1.5px solid ${T.border};border-radius:10px;padding:9px 14px;color:${T.text};font-size:13px;outline:none;font-family:'Plus Jakarta Sans',sans-serif">
         <option value="ALL" ${feeFilter.cls==="ALL"?"selected":""}>All Classes</option>
-        ${CLASSES.map(cl=>`<option value="${cl}" ${feeFilter.cls===cl?"selected":""}>${cl}</option>`).join("")}
+        ${contextClassCodes().map(cl=>`<option value="${cl}" ${feeFilter.cls===cl?"selected":""}>${cl}</option>`).join("")}
       </select>
     </div>
     <div>
@@ -513,7 +546,7 @@ function generateReport(){
   const rStudents=cls==="ALL"?students:students.filter(s=>s.cls===cls);
   if(reportFilter.type==="attendance"){
     const dates=weekDays;const totalDays=dates.length;
-    return `<div style="text-align:center;margin-bottom:24px;padding-bottom:20px;border-bottom:2px solid ${T.border}"><div style="font-family:'Space Grotesk',sans-serif;font-size:22px;font-weight:800;color:${T.text}">Monthly Attendance Report</div><div style="font-size:13px;color:${T.muted};margin-top:4px">Class: ${cls==="ALL"?"All Classes":cls} · Month: ${reportFilter.month} · Total Working Days: ${totalDays}</div><div style="font-size:11px;color:${T.muted};margin-top:2px">NEXus Solution · Generated: ${new Date().toLocaleDateString()}</div></div>
+    return `<div style="text-align:center;margin-bottom:24px;padding-bottom:20px;border-bottom:2px solid ${T.border}"><div style="font-family:'Space Grotesk',sans-serif;font-size:22px;font-weight:800;color:${T.text}">Monthly Attendance Report</div><div style="font-size:13px;color:${T.muted};margin-top:4px">Class: ${cls==="ALL"?"All Classes":cls} · Month: ${reportFilter.month} · Total Working Days: ${totalDays}</div><div style="font-size:11px;color:${T.muted};margin-top:2px">${esc(contextTitle())} · Generated: ${new Date().toLocaleDateString()}</div></div>
     <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:${T.bg2}"><th style="padding:10px 12px;text-align:left;font-weight:700;border:1px solid ${T.border}">Roll#</th><th style="padding:10px 12px;text-align:left;font-weight:700;border:1px solid ${T.border}">Student Name</th><th style="padding:10px 12px;text-align:left;font-weight:700;border:1px solid ${T.border}">Class</th>${dates.map(d=>`<th style="padding:10px 6px;text-align:center;font-weight:700;border:1px solid ${T.border};white-space:nowrap;font-size:10px">${d.slice(5)}</th>`).join("")}<th style="padding:10px 8px;text-align:center;font-weight:700;border:1px solid ${T.border}">Present</th><th style="padding:10px 8px;text-align:center;font-weight:700;border:1px solid ${T.border}">Absent</th><th style="padding:10px 8px;text-align:center;font-weight:700;border:1px solid ${T.border}">%</th><th style="padding:10px 8px;text-align:center;font-weight:700;border:1px solid ${T.border}">Status</th></tr></thead>
     <tbody>${rStudents.map((s,i)=>{const myAtt=attendance[s.id]||{};const pres=dates.filter(d=>myAtt[d]==="present").length;const abs=dates.filter(d=>myAtt[d]==="absent").length;const pct=totalDays?Math.round(pres/totalDays*100):0;const col=pct>=75?T.green:T.red;return `<tr style="background:${i%2?"#f9fffe":"#fff"}"><td style="padding:8px 12px;border:1px solid ${T.border};font-weight:600">${s.rollNo}</td><td style="padding:8px 12px;border:1px solid ${T.border};font-weight:600">${esc(s.name)}</td><td style="padding:8px 12px;border:1px solid ${T.border}">${s.cls}</td>${dates.map(d=>{const st=myAtt[d]||"absent";const ic=st==="present"?"✓":st==="late"?"L":"✗";const c=st==="present"?T.green:st==="late"?T.yellow:T.red;return `<td style="padding:6px;text-align:center;border:1px solid ${T.border};color:${c};font-weight:700;font-size:11px">${ic}</td>`;}).join("")}<td style="padding:8px;text-align:center;border:1px solid ${T.border};color:${T.green};font-weight:700">${pres}</td><td style="padding:8px;text-align:center;border:1px solid ${T.border};color:${T.red};font-weight:700">${abs}</td><td style="padding:8px;text-align:center;border:1px solid ${T.border};color:${col};font-weight:800">${pct}%</td><td style="padding:8px;text-align:center;border:1px solid ${T.border}"><span style="background:${col}20;color:${col};border-radius:20px;padding:2px 8px;font-weight:700;font-size:10px">${pct>=75?"Regular":"Short"}</span></td></tr>`;}).join("")}</tbody></table></div>`;
   }
@@ -536,7 +569,7 @@ function generateReport(){
   }
   if(reportFilter.type==="performance"){
     // ── per-class stats ──────────────────────────────────────────────
-    const classStats=CLASSES.map(cl=>{
+    const classStats=contextClassCodes().map(cl=>{
       const cs=students.filter(s=>s.cls===cl);
       if(!cs.length)return null;
       const results=cs.map(s=>{
@@ -610,7 +643,7 @@ function generateReport(){
     <!-- Header -->
     <div style="text-align:center;margin-bottom:28px;padding-bottom:20px;border-bottom:2px solid ${T.border}">
       <div style="font-family:'Space Grotesk',sans-serif;font-size:24px;font-weight:800;color:${T.text}">📊 Class Performance Report</div>
-      <div style="font-size:13px;color:${T.muted};margin-top:5px">Academic Year 2025–26 &nbsp;·&nbsp; All Classes &nbsp;·&nbsp; NEXus Solution</div>
+      <div style="font-size:13px;color:${T.muted};margin-top:5px">Academic Year 2025–26 &nbsp;·&nbsp; All Classes &nbsp;·&nbsp; ${esc(contextTitle())}</div>
       <div style="font-size:11px;color:${T.muted};margin-top:2px">Generated: ${new Date().toLocaleString()}</div>
     </div>
 

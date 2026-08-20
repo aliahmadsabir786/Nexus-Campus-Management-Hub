@@ -14,6 +14,10 @@ from flask_login import login_required
 from db import query
 from config import TODAY
 from utils.auth import perm_required, ts, safe_student
+from utils.context import apply_ctx, assert_student_in_context
+
+# Every fee row (voucher / plan / installment) hangs off a student, so the
+# student's department + campus is what decides visibility here (spec §11).
 
 fees_bp = Blueprint("fees", __name__)
 
@@ -33,6 +37,7 @@ def api_get_fees():
         sql  += " AND (LOWER(name) LIKE %s OR LOWER(id) LIKE %s)"
         args += [f"%{search}%", f"%{search}%"]
 
+    sql, args = apply_ctx(sql, args)
     pool   = query(sql, args)
     result = []
     for s in pool:
@@ -70,9 +75,9 @@ def api_get_fees():
 @fees_bp.route("/api/fees/<sid>/status", methods=["POST"])
 @perm_required("fees")
 def api_set_fee_status(sid):
-    s = query("SELECT id FROM students WHERE id=%s", (sid,), one=True)
-    if not s:
-        return jsonify({"error": "Student not found"}), 404
+    guard = assert_student_in_context(sid)
+    if guard:
+        return guard
 
     status = (request.get_json() or {}).get("status")
     if status not in ("paid", "pending", "overdue"):
@@ -88,9 +93,9 @@ def api_set_fee_status(sid):
 @fees_bp.route("/api/fees/<sid>/plan", methods=["POST"])
 @perm_required("fees")
 def api_create_fee_plan(sid):
-    s = query("SELECT id FROM students WHERE id=%s", (sid,), one=True)
-    if not s:
-        return jsonify({"error": "Student not found"}), 404
+    guard = assert_student_in_context(sid)
+    if guard:
+        return guard
 
     data  = request.get_json() or {}
     total = int(data.get("totalFee", 45000))
@@ -121,6 +126,9 @@ def api_create_fee_plan(sid):
 @fees_bp.route("/api/fees/<sid>/installment/<int:no>/pay", methods=["POST"])
 @perm_required("fees")
 def api_pay_installment(sid, no):
+    guard = assert_student_in_context(sid)
+    if guard:
+        return guard
     plan = query("SELECT * FROM fee_plans WHERE student_id=%s", (sid,), one=True)
     if not plan:
         return jsonify({"error": "No fee plan"}), 404
@@ -147,6 +155,9 @@ def api_pay_installment(sid, no):
 @fees_bp.route("/api/fees/<sid>/installment/<int:no>/revert", methods=["POST"])
 @perm_required("fees")
 def api_revert_installment(sid, no):
+    guard = assert_student_in_context(sid)
+    if guard:
+        return guard
     plan = query("SELECT * FROM fee_plans WHERE student_id=%s", (sid,), one=True)
     if not plan:
         return jsonify({"error": "No fee plan"}), 404

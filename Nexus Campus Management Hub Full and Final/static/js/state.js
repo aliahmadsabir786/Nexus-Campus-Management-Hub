@@ -37,10 +37,13 @@ function handleFeeSearch(val){
 }
 
 // ── Render engine ──────────────────────────────────────────────
+// Signed in  → the app shell.
+// Signed out → the pre-login flow in context.js:
+//              Department Selection → Campus Selection → Login (spec §22).
 function render(){
   _chartQueue = [];
   _chartFns   = {};
-  document.getElementById('app').innerHTML = currentUser ? renderShell() : renderLogin();
+  document.getElementById('app').innerHTML = currentUser ? renderShell() : renderAuthFlow();
   flushCharts();
 }
 

@@ -31,22 +31,27 @@ function renderShell(){
   <div style="${sidebarStyle}">
     <div style="padding:18px 14px;border-bottom:1px solid rgba(255,255,255,.08);display:flex;align-items:center;gap:10px;justify-content:${(!isMobile&&sidebarCollapsed)?"center":"flex-start"};height:68px;flex-shrink:0">
       <div style="width:36px;height:36px;background:linear-gradient(135deg,${T.accent},${T.accentD});border-radius:10px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:16px">🎓</div>
-      ${(isMobile||!sidebarCollapsed)?`<div><div style="font-weight:800;font-size:15px;font-family:'Space Grotesk',sans-serif;color:#fff">NEXus Solution</div><div style="font-size:10px;color:${T.sidebarText};opacity:.6">2025–26</div></div>`:""}
+      ${(isMobile||!sidebarCollapsed)?`<div style="min-width:0"><div style="font-weight:800;font-size:15px;font-family:'Space Grotesk',sans-serif;color:#fff">${esc(appContext.institution)}</div>${contextSidebarLine()||`<div style="font-size:10px;color:${T.sidebarText};opacity:.6">2025–26</div>`}</div>`:""}
     </div>
     <nav style="flex:1;padding:10px 8px;overflow-y:auto">
       ${nav.map(n=>{const a=currentPage===n.key;return `<div onclick="navTo('${n.key}')" title="${n.label}" class="nav-item" style="display:flex;align-items:center;gap:10px;padding:10px;border-radius:10px;cursor:pointer;margin-bottom:2px;background:${a?"rgba(16,185,129,.2)":"transparent"};color:${a?"#fff":T.sidebarText};font-weight:${a?700:500};font-size:13px;white-space:nowrap;overflow:hidden;justify-content:${(!isMobile&&sidebarCollapsed)?"center":"flex-start"};border-left:${a?`3px solid ${T.accent}`:"3px solid transparent"};transition:all .15s"><span style="font-size:16px;flex-shrink:0">${n.icon}</span>${(isMobile||!sidebarCollapsed)?`<span>${n.label}</span>`:""}</div>`;}).join("")}
     </nav>
-    ${(isMobile||!sidebarCollapsed)?`<div style="padding:12px 14px;border-top:1px solid rgba(255,255,255,.08)"><div style="display:flex;align-items:center;gap:10px;padding:10px;background:rgba(255,255,255,.07);border-radius:10px">${ava(currentUser.name,32,getUserPhoto())}<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(currentUser.name)}</div><div style="font-size:10px;color:${T.sidebarText};opacity:.6;text-transform:capitalize">${currentUser.isSubAdmin?"Sub-Admin":currentUser.role}</div></div></div></div>`:""}
+    ${(isMobile||!sidebarCollapsed)?`<div style="padding:12px 14px;border-top:1px solid rgba(255,255,255,.08)"><div style="display:flex;align-items:center;gap:10px;padding:10px;background:rgba(255,255,255,.07);border-radius:10px">${ava(currentUser.name,32,getUserPhoto())}<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(currentUser.name)}</div><div style="font-size:10px;color:${T.sidebarText};opacity:.6;text-transform:capitalize">${currentUser.isSubAdmin?"Sub-Admin":currentUser.role}</div></div></div>
+      <!-- Switch Institution (spec §19) — the backend validates the target and
+           destroys the session, so this is never a client-side toggle. -->
+      ${(currentUser.role==="admin"&&!currentUser.isSubAdmin&&contextLabel())?`<button type="button" class="ctx-switch" onclick="promptSwitchContext()" title="Sign out and switch department or campus">⇄ Switch Institution</button>`:""}</div>`:""}
     ${!isMobile?`<div style="padding:10px 8px;border-top:1px solid rgba(255,255,255,.08)"><div onclick="toggleSidebar()" style="display:flex;align-items:center;justify-content:center;padding:8px;border-radius:10px;cursor:pointer;background:rgba(255,255,255,.06);color:${T.sidebarText};font-size:16px">${sidebarCollapsed?"→":"←"}</div></div>`:""}
   </div>
   <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;background:${T.bg}">
-    <div style="background:#fff;border-bottom:1px solid ${T.border};padding:0 ${isMobile?"12px":"28px"};display:flex;align-items:center;justify-content:space-between;height:68px;flex-shrink:0;box-shadow:0 1px 8px rgba(5,150,105,.06)">
+    <div class="top-header" style="padding:0 ${isMobile?"12px":"28px"};display:flex;align-items:center;justify-content:space-between;height:68px;flex-shrink:0;position:relative">
       <div style="display:flex;align-items:center;gap:10px">
         ${isMobile?`<button onclick="toggleSidebar()" style="background:${T.accentL};border:none;border-radius:8px;width:36px;height:36px;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${T.accentD}">☰</button>`:""}
         <div>
           <div style="font-weight:800;font-size:${isMobile?"14px":"17px"};font-family:'Space Grotesk',sans-serif;color:${T.text}">${lbl}</div>
           ${!isMobile?`<div style="font-size:11px;color:${T.muted};margin-top:1px">${new Date().toLocaleDateString("en-PK",{weekday:"long",year:"numeric",month:"long",day:"numeric"})}</div>`:""}
         </div>
+        <!-- Institution context indicator (spec §18) — deliberately subtle -->
+        ${contextBadge()}
       </div>
       <div style="display:flex;gap:${isMobile?"6px":"12px"};align-items:center">
         ${!isMobile?`<div style="text-align:right"><div style="font-size:13px;font-weight:700;color:${T.text}">${esc(currentUser.name)}</div><div style="font-size:10px;color:${T.muted};text-transform:capitalize">${currentUser.isSubAdmin?"Sub-Admin":currentUser.role}</div></div>`:""}

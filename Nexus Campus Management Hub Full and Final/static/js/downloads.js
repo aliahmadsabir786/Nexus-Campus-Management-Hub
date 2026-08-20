@@ -1,6 +1,19 @@
 /* ================================================================
    js/downloads.js  —  NEXus Solution CMS
    ================================================================ */
+
+/* ----------------------------------------------------------------
+   Institution lines for printed documents (spec §16).
+   Printed output must name the institution it belongs to — a Boys Campus
+   voucher must not read like a whole-institution one. These return plain
+   text/HTML instead of using CSS variables, because the print window never
+   loads styles.css.
+     printInstitution() -> "NEXus Solution / Intermediate — Boys Campus"
+     printContext()     -> " · Intermediate • Boys Campus"  ("" when unset)
+   ---------------------------------------------------------------- */
+function printInstitution(){ return esc(contextTitle()); }
+function printContext(){ const l=contextLabel(); return l?' &middot; '+esc(l):''; }
+
 function downloadReportPDF(){
   const reportEl=document.getElementById("report-content");
   if(!reportEl){alert("No report loaded.");return;}
@@ -8,7 +21,7 @@ function downloadReportPDF(){
   w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Report</title><link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&family=Space+Grotesk:wght@700;800&display=swap" rel="stylesheet"/><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Plus Jakarta Sans',sans-serif;color:#0d2b23;background:#fff;padding:28px}table{border-collapse:collapse;width:100%;font-size:12px}th,td{padding:8px 10px;border:1px solid #d1fae5}th{background:#ecfdf5;font-weight:700;text-align:left}.footer{margin-top:24px;text-align:center;font-size:11px;color:#4b7a66;border-top:1px solid #d1fae5;padding-top:12px}@media print{.no-print{display:none}}</style></head><body>
   <div class="no-print" style="text-align:center;margin-bottom:16px"><button onclick="window.print()" style="background:#059669;color:#fff;border:none;padding:10px 28px;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer">🖨️ Print / Save as PDF</button></div>
   ${reportEl.innerHTML}
-  <div class="footer">NEXus Solution · Generated: ${new Date().toLocaleString()}</div></body></html>`);
+  <div class="footer">${printInstitution()} · Generated: ${new Date().toLocaleString()}</div></body></html>`);
   w.document.close();
 }
 
@@ -78,7 +91,7 @@ function downloadReportExcel(){
   } else if(reportFilter.type==="performance"){
     filename="ClassPerformance_2025-26.csv";
     csv="Class,Total Students,Passed,Failed,Pass%,Fail%,Avg Score,Avg Attendance%\n";
-    CLASSES.forEach(function(cl){
+    contextClassCodes().forEach(function(cl){
       var cs=students.filter(function(s){return s.cls===cl;});
       if(!cs.length)return;
       var results=cs.map(function(s){
@@ -109,7 +122,7 @@ function downloadReportExcel(){
 
 
 function downloadPerformanceReport(){
-  const classStats=CLASSES.map(cl=>{
+  const classStats=contextClassCodes().map(cl=>{
     const cs=students.filter(s=>s.cls===cl);
     if(!cs.length)return null;
     const results=cs.map(s=>{
@@ -217,7 +230,7 @@ function downloadPerformanceReport(){
     +'<button onclick="window.print()" style="background:#059669;color:#fff;border:none;padding:11px 30px;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer">🖨️ Print / Save PDF</button>'
     +'<button onclick="dlCSV()" style="background:#7c3aed;color:#fff;border:none;padding:11px 30px;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;margin-left:10px">⬇️ Download CSV</button>'
     +'</div>'
-    +'<div class="hdr"><div class="logo">NEXus Solution — Class Performance Report</div>'
+    +'<div class="hdr"><div class="logo">'+printInstitution()+' — Class Performance Report</div>'
     +'<div style="font-size:13px;opacity:.75;margin-top:6px">Academic Year 2025–26 · All Classes · Generated: '+new Date().toLocaleString()+'</div></div>'
     +'<div class="kpis">'
     +'<div class="kpi" style="border-top-color:#059669"><div class="kv" style="color:#059669">'+grandTotal+'</div><div class="kl">Total Students</div></div>'
@@ -253,7 +266,7 @@ function downloadPerformanceReport(){
     +'<th style="text-align:center">Avg Score</th><th style="text-align:center">Grade</th>'
     +'<th style="text-align:center">Attendance</th><th style="text-align:center">Result</th>'
     +'</tr></thead><tbody>'+studentRows+'</tbody></table>'
-    +'<div class="footer">NEXus Solution · Class Performance Report · Academic Year 2025-26 · '+new Date().toLocaleString()+'</div>'
+    +'<div class="footer">'+printInstitution()+' · Class Performance Report · Academic Year 2025-26 · '+new Date().toLocaleString()+'</div>'
     +'<script>function dlCSV(){const d=atob("'+csvB64+'");const b=new Blob([d],{type:"text/csv"});const u=URL.createObjectURL(b);const a=document.createElement("a");a.href=u;a.download="ClassPerformanceReport_2025-26.csv";a.click();}<'+'/script>'
     +'</body></html>';
   w.document.write(html);
@@ -271,10 +284,10 @@ function downloadStudentGradesPDF(sid){
   const w=window.open("","_blank","width=800,height=700");
   w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Grade Sheet - ${s.name}</title><link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&family=Space+Grotesk:wght@700;800&display=swap" rel="stylesheet"/><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Plus Jakarta Sans',sans-serif;color:#0d2b23;background:#fff;padding:32px}.header{background:linear-gradient(135deg,#064e3b,#059669);color:#fff;border-radius:16px;padding:24px 28px;margin-bottom:24px;display:flex;align-items:center;gap:20px}.logo{font-family:'Space Grotesk',sans-serif;font-size:20px;font-weight:800}table{border-collapse:collapse;width:100%;font-size:13px;margin-bottom:20px}th{background:#ecfdf5;padding:10px 14px;font-weight:700;text-align:left;border:1px solid #d1fae5}td{padding:10px 14px;border:1px solid #d1fae5}.summary{background:#f0fdf8;border:2px solid #a7f3d0;border-radius:14px;padding:20px;margin-bottom:20px;display:flex;justify-content:space-around;align-items:center;text-align:center}.footer{text-align:center;font-size:11px;color:#4b7a66;border-top:1px solid #d1fae5;padding-top:14px;margin-top:20px}@media print{.no-print{display:none}}</style></head><body>
   <div class="no-print" style="text-align:center;margin-bottom:16px"><button onclick="window.print()" style="background:#059669;color:#fff;border:none;padding:10px 28px;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer">🖨️ Print / Save PDF</button></div>
-  <div class="header"><div style="text-align:center">${photoHTML}</div><div style="flex:1"><div class="logo">NEXus Solution · Grade Sheet</div><div style="font-size:13px;opacity:.75;margin-top:4px">Academic Year 2025–26</div><div style="margin-top:12px;display:grid;grid-template-columns:repeat(3,auto);gap:12px 24px;font-size:12px"><div><div style="opacity:.6">Student</div><div style="font-weight:700">${s.name}</div></div><div><div style="opacity:.6">ID</div><div style="font-weight:700">${s.id}</div></div><div><div style="opacity:.6">Class</div><div style="font-weight:700">${s.cls}</div></div></div></div></div>
+  <div class="header"><div style="text-align:center">${photoHTML}</div><div style="flex:1"><div class="logo">${printInstitution()} · Grade Sheet</div><div style="font-size:13px;opacity:.75;margin-top:4px">Academic Year 2025–26</div><div style="margin-top:12px;display:grid;grid-template-columns:repeat(3,auto);gap:12px 24px;font-size:12px"><div><div style="opacity:.6">Student</div><div style="font-weight:700">${s.name}</div></div><div><div style="opacity:.6">ID</div><div style="font-weight:700">${s.id}</div></div><div><div style="opacity:.6">Class</div><div style="font-weight:700">${s.cls}</div></div></div></div></div>
   <table><thead><tr><th>Subject</th><th style="text-align:center">Mid/30</th><th style="text-align:center">Int/20</th><th style="text-align:center">Final/50</th><th style="text-align:center">Total/100</th><th style="text-align:center">Grade</th><th style="text-align:center">Result</th></tr></thead><tbody>${rows}</tbody></table>
   <div class="summary"><div><div style="font-size:11px;color:#4b7a66;font-weight:700;text-transform:uppercase">Total</div><div style="font-size:28px;font-weight:800;color:#059669;font-family:'Space Grotesk',sans-serif">${total}/${subs.length*100}</div></div><div><div style="font-size:11px;color:#4b7a66;font-weight:700;text-transform:uppercase">Average</div><div style="font-size:28px;font-weight:800;color:${overallCol};font-family:'Space Grotesk',sans-serif">${avg}%</div></div><div><div style="font-size:11px;color:#4b7a66;font-weight:700;text-transform:uppercase">Grade</div><div style="font-size:28px;font-weight:800;color:${overallCol};font-family:'Space Grotesk',sans-serif">${overallGrade}</div></div><div><div style="font-size:11px;color:#4b7a66;font-weight:700;text-transform:uppercase">Result</div><div style="font-size:28px;font-weight:800;color:${avg>=45?"#16a34a":"#dc2626"};font-family:'Space Grotesk',sans-serif">${avg>=45?"PASS":"FAIL"}</div></div></div>
-  <div class="footer">NEXus Solution · Generated: ${new Date().toLocaleString()}</div></body></html>`);
+  <div class="footer">${printInstitution()} · Generated: ${new Date().toLocaleString()}</div></body></html>`);
   w.document.close();
 }
 
@@ -298,9 +311,9 @@ function downloadFeeReceipt(sid){
   const w=window.open("","_blank","width=800,height=600");
   w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Fee Receipt - ${s.name}</title><link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&family=Space+Grotesk:wght@700;800&display=swap" rel="stylesheet"/><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Plus Jakarta Sans',sans-serif;color:#0d2b23;background:#fff;padding:32px}.header{background:linear-gradient(135deg,#064e3b,#059669);color:#fff;border-radius:16px;padding:24px;margin-bottom:24px;display:flex;align-items:center;gap:20px}table{border-collapse:collapse;width:100%;font-size:13px}th{background:#ecfdf5;padding:10px 14px;font-weight:700;border:1px solid #d1fae5;text-align:left}td{padding:10px 14px;border:1px solid #d1fae5}.footer{text-align:center;font-size:11px;color:#4b7a66;border-top:1px solid #d1fae5;padding-top:12px;margin-top:24px}@media print{.no-print{display:none}}</style></head><body>
   <div class="no-print" style="text-align:center;margin-bottom:16px"><button onclick="window.print()" style="background:#059669;color:#fff;border:none;padding:10px 28px;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer">🖨️ Print / Save PDF</button></div>
-  <div class="header"><div>${photoHTML}</div><div style="flex:1"><div style="font-family:'Space Grotesk',sans-serif;font-size:20px;font-weight:800">NEXus Solution · Fee Record</div><div style="opacity:.75;font-size:12px;margin-top:4px">Academic Year 2025–26</div><div style="margin-top:12px;display:flex;gap:24px;font-size:12px"><div><span style="opacity:.65">Name: </span><strong>${s.name}</strong></div><div><span style="opacity:.65">ID: </span><strong>${s.id}</strong></div><div><span style="opacity:.65">Class: </span><strong>${s.cls}</strong></div></div></div></div>
+  <div class="header"><div>${photoHTML}</div><div style="flex:1"><div style="font-family:'Space Grotesk',sans-serif;font-size:20px;font-weight:800">${printInstitution()} · Fee Record</div><div style="opacity:.75;font-size:12px;margin-top:4px">Academic Year 2025–26</div><div style="margin-top:12px;display:flex;gap:24px;font-size:12px"><div><span style="opacity:.65">Name: </span><strong>${s.name}</strong></div><div><span style="opacity:.65">ID: </span><strong>${s.id}</strong></div><div><span style="opacity:.65">Class: </span><strong>${s.cls}</strong></div></div></div></div>
   <table><thead><tr><th>#</th><th>Voucher No</th><th>Month</th><th style="text-align:center">Amount</th><th style="text-align:center">Due Date</th><th style="text-align:center">Paid Date</th><th style="text-align:center">Status</th></tr></thead><tbody>${voucherRows||`<tr><td colspan="7" style="text-align:center;padding:20px;color:#4b7a66">No fee records</td></tr>`}</tbody></table>
-  <div class="footer">NEXus Solution · Generated: ${new Date().toLocaleString()}</div></body></html>`);
+  <div class="footer">${printInstitution()} · Generated: ${new Date().toLocaleString()}</div></body></html>`);
   w.document.close();
 }
 
@@ -426,8 +439,8 @@ function printFeeVoucher(sid,no){
   +'<div class="v">'
   +'<div class="vh">'
   +'<div style="width:48px;height:48px;background:rgba(255,255,255,.15);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0">&#127891;</div>'
-  +'<div style="flex:1"><div style="font-family:\'Space Grotesk\',sans-serif;font-size:19px;font-weight:800;color:#fff">NEXus Solution</div>'
-  +'<div style="font-size:11px;color:rgba(255,255,255,.6)">Fee Payment Voucher &middot; '+plan.session+'</div>'
+  +'<div style="flex:1"><div style="font-family:\'Space Grotesk\',sans-serif;font-size:19px;font-weight:800;color:#fff">'+esc(appContext.institution)+'</div>'
+  +'<div style="font-size:11px;color:rgba(255,255,255,.6)">Fee Payment Voucher &middot; '+plan.session+printContext()+'</div>'
   +'<div style="margin-top:8px;background:rgba(255,255,255,.15);border-radius:8px;padding:4px 12px;display:inline-block;font-size:11px;font-weight:700;color:#fff">INSTALLMENT '+inst.no+' OF 3</div></div>'
   +pHTML+'</div>'
   +'<div class="vb">'
@@ -446,7 +459,7 @@ function printFeeVoucher(sid,no){
   +'<div style="font-size:11px;color:#4b7a66;margin-top:4px">Total Fee: PKR '+plan.totalFee.toLocaleString()+' &middot; Installment '+inst.no+'/3</div>'
   +'</div>'
   +'<div style="background:#064e3b;border-radius:8px;padding:10px 14px;display:flex;gap:2px;align-items:flex-end;height:52px">'+bars+'</div>'
-  +'<div style="text-align:center;font-size:9px;color:#4b7a66;margin:6px 0 12px;letter-spacing:.1em">'+inst.voucherNo+' &middot; NEXus Solution</div>'
+  +'<div style="text-align:center;font-size:9px;color:#4b7a66;margin:6px 0 12px;letter-spacing:.1em">'+inst.voucherNo+' &middot; '+printInstitution()+'</div>'
   +'<div style="text-align:center;font-size:10px;color:#4b7a66;border-top:1px solid #d1fae5;padding-top:10px">Please pay by <strong>'+inst.dueDate+'</strong> to avoid overdue charges &middot; Generated: '+new Date().toLocaleString()+'</div>'
   +'</div></div>'
   +'</body></html>');
@@ -485,7 +498,7 @@ function printInstallmentReceipt(sid,no){
   +'<div class="r">'
   +'<div class="rh">'
   +'<div style="width:40px;height:40px;background:rgba(255,255,255,.15);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">&#127891;</div>'
-  +'<div style="flex:1"><div style="font-family:\'Space Grotesk\',sans-serif;font-size:17px;font-weight:800;color:#fff">NEXus Solution</div><div style="font-size:10px;color:rgba(255,255,255,.6)">Fee Payment Receipt &middot; '+plan.session+'</div></div>'
+  +'<div style="flex:1"><div style="font-family:\'Space Grotesk\',sans-serif;font-size:17px;font-weight:800;color:#fff">NEXus Solution</div><div style="font-size:10px;color:rgba(255,255,255,.6)">Fee Payment Receipt &middot; '+plan.session+printContext()+'</div></div>'
   +pHTML+'</div>'
   +'<div class="rb">'
   +'<div class="np" style="text-align:center;margin-bottom:12px"><button onclick="window.print()" style="background:#059669;color:#fff;border:none;padding:9px 26px;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer">&#128424;&#65039; Print Receipt</button></div>'
@@ -506,7 +519,7 @@ function printInstallmentReceipt(sid,no){
   +'<div style="flex:1;background:#d1fae5;border-radius:99px;height:7px;overflow:hidden"><div style="width:'+Math.round(paidCount/3*100)+'%;height:100%;background:#059669;border-radius:99px"></div></div>'
   +'<span style="font-weight:800;color:#059669;font-size:12px">'+Math.round(paidCount/3*100)+'%</span>'
   +'</div>'
-  +'<div style="text-align:center;font-size:9px;color:#4b7a66;margin-top:10px;padding-top:8px;border-top:1px solid #d1fae5">Computer generated receipt &middot; NEXus Solution &middot; '+new Date().toLocaleString()+'</div>'
+  +'<div style="text-align:center;font-size:9px;color:#4b7a66;margin-top:10px;padding-top:8px;border-top:1px solid #d1fae5">Computer generated receipt &middot; '+printInstitution()+' &middot; '+new Date().toLocaleString()+'</div>'
   +'</div></div>'
   +'</body></html>');
   w.document.close();

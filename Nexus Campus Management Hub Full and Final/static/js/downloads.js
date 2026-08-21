@@ -16,7 +16,7 @@ function printContext(){ const l=contextLabel(); return l?' &middot; '+esc(l):''
 
 function downloadReportPDF(){
   const reportEl=document.getElementById("report-content");
-  if(!reportEl){alert("No report loaded.");return;}
+  if(!reportEl){showToast('warning','Open a report first, then download it.');return;}
   const w=window.open("","_blank","width=900,height=700");
   w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Report</title><link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&family=Space+Grotesk:wght@700;800&display=swap" rel="stylesheet"/><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Plus Jakarta Sans',sans-serif;color:#0d2b23;background:#fff;padding:28px}table{border-collapse:collapse;width:100%;font-size:12px}th,td{padding:8px 10px;border:1px solid #d1fae5}th{background:#ecfdf5;font-weight:700;text-align:left}.footer{margin-top:24px;text-align:center;font-size:11px;color:#4b7a66;border-top:1px solid #d1fae5;padding-top:12px}@media print{.no-print{display:none}}</style></head><body>
   <div class="no-print" style="text-align:center;margin-bottom:16px"><button onclick="window.print()" style="background:#059669;color:#fff;border:none;padding:10px 28px;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer">🖨️ Print / Save as PDF</button></div>
@@ -29,7 +29,7 @@ function downloadReportExcel(){
   var csv="",filename="report.csv";
   var cls=reportFilter.cls||"CS-A";
   var rStudents=cls==="ALL"?students:students.filter(function(s){return s.cls===cls;});
-  if(!students||!students.length){alert("No data loaded yet. Please wait for the page to finish loading.");return;}
+  if(!students||!students.length){showToast('info','Still loading records — try again in a moment.');return;}
 
   if(reportFilter.type==="attendance"){
     var monthName=reportFilter.month.split(" ")[0];
@@ -84,7 +84,7 @@ function downloadReportExcel(){
   } else if(reportFilter.type==="exams"){
     filename="ExamSchedule_"+cls.replace(/\s/g,"_")+"_2025-26.csv";
     var clsExams=cls==="ALL"?exams:exams.filter(function(e){return e.cls===cls;});
-    if(!clsExams||!clsExams.length){alert("No exams found for the selected class.");return;}
+    if(!clsExams||!clsExams.length){showToast('info','No exams scheduled for the selected class.');return;}
     csv="#,Exam,Subject,Class,Date,Time,Duration,Room,Total Marks\n";
     clsExams.forEach(function(e,i){csv+=(i+1)+',"'+e.title+'","'+e.subject+'","'+e.cls+'","'+e.date+'","'+e.time+'","'+e.duration+'","'+e.room+'",'+e.totalMarks+"\n";});
 
@@ -112,7 +112,7 @@ function downloadReportExcel(){
     });
   }
 
-  if(!csv||csv.split("\n").length<=2){alert("No data available for this report. Make sure students and data are loaded.");return;}
+  if(!csv||csv.split("\n").length<=2){showToast('info','Nothing to export for this report yet.');return;}
   var bom="\uFEFF";
   var blob=new Blob([bom+csv],{type:"text/csv;charset=utf-8;"});
   var url=URL.createObjectURL(blob);
@@ -183,7 +183,7 @@ function downloadPerformanceReport(){
 
   // Build student rows HTML
   const studentRows=classStats.flatMap((c,ci)=>c.results.map((r,i)=>{
-    const gc=gradeColor(r.avg);
+    const gc=gradeColorLit(r.avg);
     const ac=r.attPct>=75?"#16a34a":"#dc2626";
     const rc=r.passed?"#dcfce7":"#fee2e2";
     const rtc=r.passed?"#16a34a":"#dc2626";
@@ -275,10 +275,10 @@ function downloadPerformanceReport(){
 
 
 function downloadStudentGradesPDF(sid){
-  const s=students.find(x=>x.id===sid)||students.find(x=>x.id===currentUser?.id);if(!s){alert("Student not found");return;}
+  const s=students.find(x=>x.id===sid)||students.find(x=>x.id===currentUser?.id);if(!s){showToast('error','That student is not in this institution.');return;}
   const sg=grades[s.id]||{};const subs=SUBJECTS.slice(0,5);
-  const rows=subs.map(sub=>{const g=sg[sub]||{midterm:0,final:0,internal:0,total:0};const gl=gradeLabel(g.total);const col=gradeColor(g.total);return `<tr><td>${sub}</td><td style="text-align:center">${g.midterm||0}/30</td><td style="text-align:center">${g.internal||0}/20</td><td style="text-align:center">${g.final||0}/50</td><td style="text-align:center;font-weight:800;color:${col}">${g.total||0}/100</td><td style="text-align:center"><span style="background:${col}20;color:${col};border-radius:20px;padding:2px 8px;font-weight:800">${gl}</span></td><td style="text-align:center;color:${g.total>=45?"#16a34a":"#dc2626"};font-weight:700">${g.total>=45?"Pass":"Fail"}</td></tr>`;}).join("");
-  const tots=subs.map(sub=>sg[sub]?.total||0);const total=tots.reduce((a,b)=>a+b,0);const avg=tots.length?Math.round(total/tots.length):0;const overallGrade=gradeLabel(avg);const overallCol=gradeColor(avg);
+  const rows=subs.map(sub=>{const g=sg[sub]||{midterm:0,final:0,internal:0,total:0};const gl=gradeLabel(g.total);const col=gradeColorLit(g.total);return `<tr><td>${sub}</td><td style="text-align:center">${g.midterm||0}/30</td><td style="text-align:center">${g.internal||0}/20</td><td style="text-align:center">${g.final||0}/50</td><td style="text-align:center;font-weight:800;color:${col}">${g.total||0}/100</td><td style="text-align:center"><span style="background:${col}20;color:${col};border-radius:20px;padding:2px 8px;font-weight:800">${gl}</span></td><td style="text-align:center;color:${g.total>=45?"#16a34a":"#dc2626"};font-weight:700">${g.total>=45?"Pass":"Fail"}</td></tr>`;}).join("");
+  const tots=subs.map(sub=>sg[sub]?.total||0);const total=tots.reduce((a,b)=>a+b,0);const avg=tots.length?Math.round(total/tots.length):0;const overallGrade=gradeLabel(avg);const overallCol=gradeColorLit(avg);
   const photoHTML=s.photo?`<img src="${s.photo}" style="width:72px;height:72px;border-radius:50%;object-fit:cover;border:3px solid #d1fae5"/>`:
     `<div style="width:72px;height:72px;border-radius:50%;background:linear-gradient(135deg,#059669,#047857);display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:800;color:#fff">${(s.name||"?")[0].toUpperCase()}</div>`;
   const w=window.open("","_blank","width=800,height=700");
@@ -303,7 +303,7 @@ function downloadMarksSheetExcel(){
 }
 
 function downloadFeeReceipt(sid){
-  const s=students.find(x=>x.id===sid)||students.find(x=>x.id===currentUser?.id);if(!s){alert("Student not found");return;}
+  const s=students.find(x=>x.id===sid)||students.find(x=>x.id===currentUser?.id);if(!s){showToast('error','That student is not in this institution.');return;}
   const vouchers=feeVouchers[s.id]||[];
   const photoHTML=s.photo?`<img src="${s.photo}" style="width:60px;height:60px;border-radius:50%;object-fit:cover;border:2px solid #d1fae5"/>`:
     `<div style="width:60px;height:60px;border-radius:50%;background:linear-gradient(135deg,#059669,#047857);display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:800;color:#fff">${(s.name||"?")[0].toUpperCase()}</div>`;
@@ -344,8 +344,8 @@ function submitCreateFeePlan(sid){
   const d1=(document.getElementById("f-due1")?.value||formData.due1||"").trim();
   const d2=(document.getElementById("f-due2")?.value||formData.due2||"").trim();
   const d3=(document.getElementById("f-due3")?.value||formData.due3||"").trim();
-  if(!tf||tf<1){alert("Please enter a valid total fee.");return;}
-  if(!d1||!d2||!d3){alert("Please fill all three due dates.");return;}
+  if(!tf||tf<1){showToast('warning','Enter a valid total fee.');return;}
+  if(!d1||!d2||!d3){showToast('warning','Fill all three due dates.');return;}
   const each=Math.floor(tf/3),last=tf-(each*2);
   feeInstallments[sid]={totalFee:tf,session:sess,installments:[
     {no:1,amount:each,dueDate:d1,status:"pending",voucherNo:`VCH-${sid}-1`,paidDate:null,receiptNo:null},
@@ -353,7 +353,8 @@ function submitCreateFeePlan(sid){
     {no:3,amount:last,dueDate:d3,status:"pending",voucherNo:`VCH-${sid}-3`,paidDate:null,receiptNo:null},
   ]};
   const s=students.find(x=>x.id===sid);if(s)s.feeStatus="pending";
-  alert("Fee plan created! 3 installment vouchers ready. Click 'Voucher' on each to print.");closeModal();
+  closeModal();refreshContent();
+  showToast('success','Fee plan created — 3 installment vouchers are ready to print.');
 }
 async function submitEditFeePlan(sid){
   const plan=feeInstallments[sid];if(!plan)return;
@@ -362,8 +363,8 @@ async function submitEditFeePlan(sid){
   const d1=(document.getElementById('f-due1')?.value||formData.due1||'').trim();
   const d2=(document.getElementById('f-due2')?.value||formData.due2||'').trim();
   const d3=(document.getElementById('f-due3')?.value||formData.due3||'').trim();
-  if(!tf||tf<1){alert('Please enter a valid total fee.');return;}
-  if(!d1||!d2||!d3){alert('Please fill all three due dates.');return;}
+  if(!tf||tf<1){showToast('warning','Enter a valid total fee.');return;}
+  if(!d1||!d2||!d3){showToast('warning','Fill all three due dates.');return;}
   const each=Math.floor(tf/3),last=tf-(each*2);
   // Update local state
   plan.totalFee=tf;plan.session=sess;
@@ -375,13 +376,21 @@ async function submitEditFeePlan(sid){
     await fetch(`/api/fees/${sid}/plan`,{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({totalFee:tf,session:sess,due1:d1,due2:d2,due3:d3})});
   } catch(e){console.error('Edit plan error:',e);}
-  alert('Fee plan updated.');closeModal();await loadAllDataFromDB();
+  closeModal();refreshContent();
+  showToast('success','Fee plan updated.');
+  await loadAllDataFromDB();
 }
-function removeFeePlan(sid){
-  if(!confirm("Remove this fee plan?"))return;
+async function removeFeePlan(sid){
+  if(!await confirmAction({
+    title:'Remove fee plan',
+    message:'Remove this fee plan?',
+    note:'The installment schedule and its vouchers are discarded. This cannot be undone.',
+    confirmLabel:'Remove plan',
+  }))return;
   delete feeInstallments[sid];
   const s=students.find(x=>x.id===sid);if(s)s.feeStatus="pending";
   refreshContent();
+  showToast('success','Fee plan removed.');
 }
 function markInstallmentPaid(sid,no){
   const plan=feeInstallments[sid];if(!plan)return;
@@ -400,12 +409,20 @@ async function setInstallmentOverdue(sid,no){
     // Mark as overdue by reverting then setting status (backend doesn't have separate overdue endpoint)
   } catch(e){console.error('Overdue error:',e);}
 }
-function revertInstallmentPaid(sid,no){
-  if(!confirm("Revert installment to pending?"))return;
+async function revertInstallmentPaid(sid,no){
+  if(!await confirmAction({
+    title:'Revert installment',
+    tone:'warning',
+    icon:'↺',
+    message:`Mark installment ${no} as pending again?`,
+    note:'The payment date and receipt number are cleared.',
+    confirmLabel:'Revert to pending',
+  }))return;
   const plan=feeInstallments[sid];if(!plan)return;
   const inst=plan.installments.find(i=>i.no===no);if(!inst)return;
   inst.status="pending";inst.paidDate=null;inst.receiptNo=null;
   _updateStudentFeeStatus(sid);refreshContent();
+  showToast('success',`Installment ${no} reverted to pending.`);
 }
 function _updateStudentFeeStatus(sid){
   const s=students.find(x=>x.id===sid);if(!s)return;
@@ -419,7 +436,7 @@ function printFeeVoucher(sid,no){
   const plan=feeInstallments[sid];
   const inst=plan&&plan.installments&&plan.installments.find(function(i){return i.no===no;});
   const s=students.find(function(x){return x.id===sid;});
-  if(!inst||!s){alert("Voucher not found");return;}
+  if(!inst||!s){showToast('error','That voucher is not available.');return;}
   const pHTML=s.photo?'<img src="'+s.photo+'" style="width:66px;height:66px;border-radius:50%;object-fit:cover;border:3px solid rgba(255,255,255,.4)"/>'
     :'<div style="width:66px;height:66px;border-radius:50%;background:rgba(255,255,255,.2);border:2px solid rgba(255,255,255,.3);display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:800;color:#fff">'+(s.name||"?")[0].toUpperCase()+'</div>';
   const bars=Array.from({length:32},function(){return '<div style="background:#fff;border-radius:2px;width:3px;height:'+Math.floor(Math.random()*26+14)+'px"></div>';}).join("");
@@ -470,7 +487,7 @@ function printInstallmentReceipt(sid,no){
   const plan=feeInstallments[sid];
   const inst=plan&&plan.installments&&plan.installments.find(function(i){return i.no===no;});
   const s=students.find(function(x){return x.id===sid;});
-  if(!inst||!s||inst.status!=="paid"){alert("Receipt only available for paid installments.");return;}
+  if(!inst||!s||inst.status!=="paid"){showToast('info','A receipt is only available once the installment is paid.');return;}
   const allPaid=plan.installments.every(function(i){return i.status==="paid";});
   const paidCount=plan.installments.filter(function(i){return i.status==="paid";}).length;
   const pHTML=s.photo?'<img src="'+s.photo+'" style="width:54px;height:54px;border-radius:50%;object-fit:cover;border:2px solid rgba(255,255,255,.4)"/>'

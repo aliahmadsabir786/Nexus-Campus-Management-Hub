@@ -9,8 +9,11 @@
 
 <head>
   <meta charset="UTF-8" />
-  <!-- Responsive viewport — prevents horizontal scroll on mobile -->
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <!-- Responsive viewport.
+       maximum-scale / user-scalable were removed on purpose: blocking pinch
+       zoom fails WCAG 1.4.4 (spec §45). Horizontal scroll is prevented by
+       fixing the overflowing components instead — see ui.css section 6. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#064e3b" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -29,6 +32,10 @@
   <!-- Institution context: department/campus screens + dark-mode corrections.
        Must load AFTER styles.css so its dark-mode rules win the cascade. -->
   <link rel="stylesheet" href="/static/css/context.css" />
+  <!-- Shared UI system: toasts, modals, loading states, dark-mode
+       corrections, responsive/overflow fixes. Loads LAST so it can correct
+       the older hard-coded rules above without editing every one of them. -->
+  <link rel="stylesheet" href="/static/css/ui.css" />
 
   <!-- Inline critical styles (prevent FOUC) -->
   <style>
@@ -63,23 +70,30 @@
 
   <!-- ============================================================
        JavaScript Modules — loaded in dependency order
-       
+
        Load order:
-         1. theme.js    — design tokens + UI helpers (T, esc, card…)
-         2. data.js     — seed data + constants (students, teachers…)
-         3. state.js    — reactive state + render engine
-         4. context.js  — department/campus selection + context labels
-         5. charts.js   — responsive canvas charts
-         6. login.js    — login page + auth
-         7. shell.js    — app shell (sidebar, header, nav)
-         7. admin.js    — all admin pages
-         8. teacher.js  — all teacher pages
-         9. student.js  — all student pages
-        10. modals.js   — all modal dialogs
-        11. downloads.js — PDF/Excel/print helpers
-        12. api.js      — backend API bridge + DOMContentLoaded
+         1. theme.js         — design tokens + UI helpers (T, esc, card…)
+         2. notifications.js — showToast() / notify.* (needs esc from theme)
+         3. data.js          — seed data + constants (students, teachers…)
+         4. state.js         — reactive state + render engine
+         5. context.js       — department/campus selection + context labels
+         6. charts.js        — responsive canvas charts
+         7. login.js         — login page + auth
+         8. shell.js         — app shell (sidebar, header, nav)
+         9. classes.js / academic_module.js — class & section management
+        10. admin.js         — all admin pages
+        11. teacher.js       — all teacher pages
+        12. student.js       — all student pages
+        13. modals.js        — all modal dialogs
+        14. downloads.js     — PDF/Excel/print helpers
+        15. api.js           — backend API bridge + DOMContentLoaded
+        16. modal.js         — LAST on purpose: showModal/confirmAction wrap
+                              the openModal/closeModal defined above, so the
+                              existing call sites gain focus management, ESC
+                              and a targeted repaint without being rewritten.
   ============================================================ -->
   <script src="/static/js/theme.js"></script>
+  <script src="/static/js/notifications.js"></script>
   <script src="/static/js/data.js"></script>
   <script src="/static/js/state.js"></script>
   <script src="/static/js/context.js"></script>
@@ -94,6 +108,7 @@
   <script src="/static/js/modals.js"></script>
   <script src="/static/js/downloads.js"></script>
   <script src="/static/js/api.js"></script>
+  <script src="/static/js/modal.js"></script>
 
   <!-- Dismiss loading screen after app initialises -->
   <script>

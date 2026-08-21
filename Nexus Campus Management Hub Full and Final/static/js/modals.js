@@ -9,7 +9,7 @@ function renderStudentFees(s){
   ${plan?`<div style="background:${T.surface};border:1px solid ${T.border};border-radius:16px;padding:22px;margin-bottom:18px;box-shadow:${T.shadow}">
     ${secTitle('📋 Installment Plan')}
     <div style="background:${T.bg};border-radius:10px;padding:10px 12px;margin-bottom:12px"><div style="display:flex;justify-content:space-between;font-size:12px;color:${T.muted};margin-bottom:6px"><span>Total: <strong style="color:${T.text}">PKR ${plan.totalFee.toLocaleString()}</strong> · Session: ${plan.session||'—'}</span><span style="font-weight:700;color:${T.accent}">${(plan.installments||[]).filter(i=>i.status==='paid').length}/3 paid</span></div>${pbar(Math.round((plan.installments||[]).filter(i=>i.status==='paid').length/3*100),T.accent)}</div>
-    <div style="display:grid;gap:8px">${(plan.installments||[]).map(inst=>{const iCol={paid:T.green,pending:T.yellow,overdue:T.red}[inst.status]||T.muted;return `<div style="background:${iCol}10;border:1px solid ${iCol}30;border-radius:10px;padding:12px 14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px"><div><div style="font-size:13px;font-weight:700">Installment ${inst.no} · <span style="color:${T.accent}">PKR ${inst.amount.toLocaleString()}</span></div><div style="font-size:11px;color:${T.muted};margin-top:2px">📄 ${inst.voucherNo} · Due: ${inst.dueDate}${inst.status==='paid'?` · Paid: ${inst.paidDate}`:''}</div></div><span style="background:${iCol}20;color:${iCol};border-radius:20px;padding:3px 12px;font-size:11px;font-weight:700;text-transform:capitalize">${inst.status}</span></div>`;}).join('')}</div>
+    <div style="display:grid;gap:8px">${(plan.installments||[]).map(inst=>{const iCol={paid:T.green,pending:T.yellow,overdue:T.red}[inst.status]||T.muted;return `<div style="background:${alpha(iCol,6)};border:1px solid ${alpha(iCol,19)};border-radius:10px;padding:12px 14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px"><div><div style="font-size:13px;font-weight:700">Installment ${inst.no} · <span style="color:${T.accent}">PKR ${inst.amount.toLocaleString()}</span></div><div style="font-size:11px;color:${T.muted};margin-top:2px">📄 ${inst.voucherNo} · Due: ${inst.dueDate}${inst.status==='paid'?` · Paid: ${inst.paidDate}`:''}</div></div><span style="background:${alpha(iCol,13)};color:${iCol};border-radius:20px;padding:3px 12px;font-size:11px;font-weight:700;text-transform:capitalize">${inst.status}</span></div>`;}).join('')}</div>
     <div style="margin-top:14px">${pbtn('🧾 Download Fee Receipt',`downloadFeeReceipt('${s.id}')`)}</div>
   </div>`:''}<div style="display:grid;gap:14px">${vouchers.length===0?card(`<div style="text-align:center;padding:40px;color:${T.muted}">No fee vouchers found</div>`):vouchers.map(v=>`<div style="background:${T.surface};border:1px solid ${T.border};border-radius:16px;padding:22px;box-shadow:${T.shadow};border-left:4px solid ${v.status==='paid'?T.green:v.status==='overdue'?T.red:T.yellow}">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:14px">
@@ -295,17 +295,25 @@ function renderModal(){
     const ovdC=students.filter(s=>s.feeStatus==="overdue").length;
     const totalCol=paidC*15000;
     content=`<div style="display:grid;gap:12px;margin-bottom:18px">
-      ${[["✅ Paid",paidC,T.green,"PKR "+totalCol.toLocaleString()+" collected"],["⏳ Pending",pendC,T.yellow,"PKR "+(pendC*15000).toLocaleString()+" expected"],["🚨 Overdue",ovdC,T.red,"PKR "+(ovdC*15000).toLocaleString()+" overdue"]].map(([l,c,col,sub])=>`<div style="background:${col}10;border:1px solid ${col}30;border-radius:12px;padding:16px;display:flex;justify-content:space-between;align-items:center"><div><div style="font-weight:700;font-size:13px">${l}</div><div style="font-size:12px;color:${T.muted};margin-top:2px">${sub}</div></div><div style="font-size:28px;font-weight:800;color:${col};font-family:'Space Grotesk',sans-serif">${c}</div></div>`).join("")}
+      ${[["✅ Paid",paidC,T.green,"PKR "+totalCol.toLocaleString()+" collected"],["⏳ Pending",pendC,T.yellow,"PKR "+(pendC*15000).toLocaleString()+" expected"],["🚨 Overdue",ovdC,T.red,"PKR "+(ovdC*15000).toLocaleString()+" overdue"]].map(([l,c,col,sub])=>`<div style="background:${alpha(col,6)};border:1px solid ${alpha(col,19)};border-radius:12px;padding:16px;display:flex;justify-content:space-between;align-items:center"><div><div style="font-weight:700;font-size:13px">${l}</div><div style="font-size:12px;color:${T.muted};margin-top:2px">${sub}</div></div><div style="font-size:28px;font-weight:800;color:${col};font-family:'Space Grotesk',sans-serif">${c}</div></div>`).join("")}
     </div>
     <div style="background:${T.accentL};border-radius:10px;padding:14px;text-align:center;margin-bottom:16px"><div style="font-size:12px;color:${T.muted};font-weight:600;margin-bottom:4px">TOTAL MONTHLY COLLECTION</div><div style="font-size:24px;font-weight:800;color:${T.accent};font-family:'Space Grotesk',sans-serif">PKR ${totalCol.toLocaleString()}</div></div>
     <button onclick="closeModal()" style="width:100%;background:linear-gradient(135deg,${T.accent},${T.accentD});color:#fff;border:none;border-radius:12px;padding:13px;font-size:15px;font-weight:700;cursor:pointer">Close</button>`;}
 
-  return `<div onclick="closeModal()" style="position:fixed;inset:0;background:rgba(6,78,59,.45);backdrop-filter:blur(4px);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px">
-    <div onclick="event.stopPropagation()" style="background:#fff;border-radius:20px;padding:30px;width:100%;max-width:${modalState==="addSubAdmin"||modalState==="editSubAdmin"?"580px":"520px"};max-height:90vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.25)">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px">
-        <span style="font-family:'Space Grotesk',sans-serif;font-weight:800;font-size:18px;color:${T.text}">${title}</span>
-        <button onclick="closeModal()" style="background:${T.bg};border:none;color:${T.muted};border-radius:10px;width:34px;height:34px;cursor:pointer;font-size:16px;font-weight:700;display:flex;align-items:center;justify-content:center">✕</button>
-      </div>${content}
+  // ─── SHARED SHELL ───────────────────────────────────────────────
+  // Built from the same .nx-modal classes as showModal()/confirmAction()
+  // (ui.css §3), so every one of these dialogs inherits ONE design
+  // language: dark-mode surfaces, a scrolling body with a pinned header,
+  // 560/700px on desktop and calc(100% - 24px) on mobile.
+  // ESC, focus trap and focus restore are wired by modal.js.
+  const wide = (modalState==="addSubAdmin"||modalState==="editSubAdmin"||modalState==="viewStudent"||modalState==="feeReport");
+  return `<div class="nx-modal is-in" onclick="if(event.target===this)closeModal()">
+    <div class="nx-modal__panel${wide?" nx-modal__panel--lg":""}" data-modal-panel role="dialog" aria-modal="true" aria-label="${esc(String(title).replace(/<[^>]*>/g,""))}">
+      <div class="nx-modal__head">
+        <div class="nx-modal__title">${title}</div>
+        <button type="button" onclick="closeModal()" class="nx-modal__x" aria-label="Close dialog">&#10005;</button>
+      </div>
+      <div class="nx-modal__body">${content}</div>
     </div>
   </div>`;}
 
@@ -418,20 +426,16 @@ function submitAddSubAdmin(){
   const name=(document.getElementById("f-name")?.value||"").trim();
   const username=(document.getElementById("f-username")?.value||"").trim();
   const password=(document.getElementById("f-password")?.value||"").trim();
-  if(!name){alert("Please enter a name");return;}
-  if(!username){alert("Please enter a username");return;}
-  if(!password){alert("Please enter a password");return;}
-  if(username==="admin"){alert("Username 'admin' is reserved for the main admin");return;}
-  if(subAdmins.some(x=>x.username===username)){alert("Username already taken. Choose a different one.");return;}
+  if(!name){showToast('warning','Enter a name.');return;}
+  if(!username){showToast('warning','Enter a username.');return;}
+  if(!password){showToast('warning','Enter a password.');return;}
+  if(username==="admin"){showToast('error',"The username 'admin' is reserved for the main administrator.");return;}
+  if(subAdmins.some(x=>x.username===username)){showToast('error','That username is already taken in this institution.');return;}
   const newSA={id:"SA"+Date.now(),name,username,password,permissions:[...subAdminPermsSelected],portal:"active",createdAt:today};
   subAdmins.push(newSA);
-  alert(`✅ Sub-Admin Created!
-
-Username: ${username}
-Password: ${password}
-
-They can log in using the Admin tab.`);
-  closeModal();
+  closeModal();refreshContent();
+  // Deliberately does NOT echo the password back on screen (spec §3).
+  showToast('success',`Sub-admin "${name}" created. They can sign in as ${username} on the Admin tab.`);
 }
 
 // ─── EDIT SUB-ADMIN ───
@@ -444,25 +448,36 @@ function submitEditSubAdmin(id){
   const name=(document.getElementById("f-name")?.value||"").trim();
   const username=(document.getElementById("f-username")?.value||"").trim();
   const pwd=(document.getElementById("f-password")?.value||"").trim();
-  if(!name){alert("Name cannot be empty");return;}
-  if(!username){alert("Username cannot be empty");return;}
-  if(username==="admin"){alert("Username 'admin' is reserved");return;}
-  if(subAdmins.some(x=>x.username===username&&x.id!==id)){alert("Username already taken.");return;}
+  if(!name){showToast('warning','Name cannot be empty.');return;}
+  if(!username){showToast('warning','Username cannot be empty.');return;}
+  if(username==="admin"){showToast('error',"The username 'admin' is reserved.");return;}
+  if(subAdmins.some(x=>x.username===username&&x.id!==id)){showToast('error','That username is already taken in this institution.');return;}
   sa.name=name;sa.username=username;
   if(pwd)sa.password=pwd;
   sa.permissions=[...subAdminPermsSelected];
   if(currentUser&&currentUser.id===id){currentUser.name=sa.name;currentUser.permissions=[...sa.permissions];}
-  alert("✅ Sub-admin updated!");
-  closeModal();
+  closeModal();refreshContent();
+  showToast('success',`Sub-admin "${sa.name}" updated.`);
 }
 function toggleSubAdmin(id){const sa=subAdmins.find(x=>x.id===id);if(sa)sa.portal=sa.portal==="active"?"inactive":"active";refreshContent();}
-function delSubAdmin(id){if(confirm("Delete this sub-admin?"))subAdmins=subAdmins.filter(x=>x.id!==id);refreshContent();}
+async function delSubAdmin(id){
+  const sa=subAdmins.find(x=>x.id===id);
+  if(!await confirmAction({
+    title:'Delete sub-admin',
+    message:`Delete sub-admin "${sa?sa.name:id}"?`,
+    note:'Their account and permissions are removed. This cannot be undone.',
+    confirmLabel:'Delete sub-admin',
+  }))return;
+  subAdmins=subAdmins.filter(x=>x.id!==id);
+  refreshContent();
+  showToast('success','Sub-admin deleted.');
+}
 
 // ─── PHOTO PREVIEW HELPERS ───
-function previewStudentPhoto(input){const file=input.files[0];if(!file)return;if(file.size>2*1024*1024){alert("Photo too large. Max 2MB.");return;}const reader=new FileReader();reader.onload=ev=>{formData._photoData=ev.target.result;const prev=document.getElementById("stu-photo-preview");if(prev)prev.innerHTML=`<img src="${ev.target.result}" style="width:100%;height:100%;object-fit:cover"/>`;};reader.readAsDataURL(file);}
-function previewTeacherPhoto(input){const file=input.files[0];if(!file)return;if(file.size>2*1024*1024){alert("Photo too large. Max 2MB.");return;}const reader=new FileReader();reader.onload=ev=>{formData._photoData=ev.target.result;const prev=document.getElementById("teach-photo-preview");if(prev)prev.innerHTML=`<img src="${ev.target.result}" style="width:100%;height:100%;object-fit:cover"/>`;};reader.readAsDataURL(file);}
-function previewEditStuPhoto(input){const file=input.files[0];if(!file)return;if(file.size>2*1024*1024){alert("Photo too large. Max 2MB.");return;}const reader=new FileReader();reader.onload=ev=>{formData._photoData=ev.target.result;const prev=document.getElementById("edit-stu-photo-preview");if(prev)prev.innerHTML=`<img src="${ev.target.result}" style="width:100%;height:100%;object-fit:cover"/>`;};reader.readAsDataURL(file);}
-function previewEditTeachPhoto(input){const file=input.files[0];if(!file)return;if(file.size>2*1024*1024){alert("Photo too large. Max 2MB.");return;}const reader=new FileReader();reader.onload=ev=>{formData._photoData=ev.target.result;const prev=document.getElementById("edit-teach-photo-preview");if(prev)prev.innerHTML=`<img src="${ev.target.result}" style="width:100%;height:100%;object-fit:cover"/>`;};reader.readAsDataURL(file);}
+function previewStudentPhoto(input){const file=input.files[0];if(!file)return;if(file.size>2*1024*1024){showToast('warning','That photo is over 2 MB. Please choose a smaller image.');return;}const reader=new FileReader();reader.onload=ev=>{formData._photoData=ev.target.result;const prev=document.getElementById("stu-photo-preview");if(prev)prev.innerHTML=`<img src="${ev.target.result}" style="width:100%;height:100%;object-fit:cover"/>`;};reader.readAsDataURL(file);}
+function previewTeacherPhoto(input){const file=input.files[0];if(!file)return;if(file.size>2*1024*1024){showToast('warning','That photo is over 2 MB. Please choose a smaller image.');return;}const reader=new FileReader();reader.onload=ev=>{formData._photoData=ev.target.result;const prev=document.getElementById("teach-photo-preview");if(prev)prev.innerHTML=`<img src="${ev.target.result}" style="width:100%;height:100%;object-fit:cover"/>`;};reader.readAsDataURL(file);}
+function previewEditStuPhoto(input){const file=input.files[0];if(!file)return;if(file.size>2*1024*1024){showToast('warning','That photo is over 2 MB. Please choose a smaller image.');return;}const reader=new FileReader();reader.onload=ev=>{formData._photoData=ev.target.result;const prev=document.getElementById("edit-stu-photo-preview");if(prev)prev.innerHTML=`<img src="${ev.target.result}" style="width:100%;height:100%;object-fit:cover"/>`;};reader.readAsDataURL(file);}
+function previewEditTeachPhoto(input){const file=input.files[0];if(!file)return;if(file.size>2*1024*1024){showToast('warning','That photo is over 2 MB. Please choose a smaller image.');return;}const reader=new FileReader();reader.onload=ev=>{formData._photoData=ev.target.result;const prev=document.getElementById("edit-teach-photo-preview");if(prev)prev.innerHTML=`<img src="${ev.target.result}" style="width:100%;height:100%;object-fit:cover"/>`;};reader.readAsDataURL(file);}
 
 // ─── EDIT STUDENT / TEACHER ───
 function openEditStudent(sid){const s=students.find(x=>x.id===sid);if(s){formData={...s,_photoData:null};modalState="editStudent";render();initStudentClassDropdown(s.classId||s.class_id||null, s.sectionId||s.section_id||null);}}

@@ -123,7 +123,7 @@ function renderTeacherSubjectAttendance(t){
 
   <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px">
     ${[["✅ Present",presentCount,T.green,T.greenL],["❌ Absent",absentCount,T.red,T.redL],["⏰ Late",lateCount,T.yellow,T.yellowL],["📊 Rate",pct+"%",pct>=75?T.green:pct>=50?T.yellow:T.red,pct>=75?T.greenL:pct>=50?T.yellowL:T.redL]].map(([l,v,c,bg])=>`
-    <div style="background:${bg};border:1px solid ${c}30;border-radius:12px;padding:12px 16px;display:flex;align-items:center;justify-content:space-between">
+    <div style="background:${bg};border:1px solid ${alpha(c,19)};border-radius:12px;padding:12px 16px;display:flex;align-items:center;justify-content:space-between">
       <div style="font-size:11px;color:${c};font-weight:700">${l}</div>
       <div style="font-size:20px;font-weight:800;color:${c};font-family:'Space Grotesk',sans-serif">${v}</div>
     </div>`).join("")}
@@ -219,7 +219,7 @@ function renderTeacherSubjectGrades(t){
             style="width:60px;background:${T.bg};border:1.5px solid ${T.border};border-radius:6px;padding:5px;font-size:12px;text-align:center;outline:none;font-family:'Plus Jakarta Sans',sans-serif"/>
         </td>
         <td style="padding:10px 14px;text-align:center">
-          ${examScore?`<span style="background:${gradeColor(pct)}20;color:${gradeColor(pct)};border-radius:20px;padding:3px 12px;font-weight:800;font-size:12px">${gradeLabel(pct)}</span>`:"—"}
+          ${examScore?`<span style="background:${alpha(gradeColor(pct),13)};color:${gradeColor(pct)};border-radius:20px;padding:3px 12px;font-weight:800;font-size:12px">${gradeLabel(pct)}</span>`:"—"}
         </td>
       </tr>`;}).join("")}</tbody>
   </table></div>`, "", 0)
@@ -250,7 +250,7 @@ function renderTeacherSubjectGrades(t){
             style="width:48px;background:${T.bg};border:1.5px solid ${T.border};border-radius:6px;padding:4px;font-size:11px;text-align:center;outline:none;display:block;margin:auto;font-family:'Plus Jakarta Sans',sans-serif"/>
         </td>`).join("")}
         <td style="padding:10px 14px;text-align:center">
-          <span id="grade-total-${s.id}-${subj.replace(/\s/g,'_')}" style="background:${gradeColor(tot)}20;color:${gradeColor(tot)};border-radius:20px;padding:3px 12px;font-weight:800;font-size:12px">${tot||0} · ${gradeLabel(tot)}</span>
+          <span id="grade-total-${s.id}-${subj.replace(/\s/g,'_')}" style="background:${alpha(gradeColor(tot),13)};color:${gradeColor(tot)};border-radius:20px;padding:3px 12px;font-weight:800;font-size:12px">${tot||0} · ${gradeLabel(tot)}</span>
         </td>
       </tr>`;}).join("")}</tbody>
   </table></div>`, "", 0)}`;

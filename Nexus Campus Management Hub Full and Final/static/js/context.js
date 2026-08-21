@@ -361,7 +361,7 @@ async function switchContext(deptCode, campusCode) {
       body: JSON.stringify({department: deptCode, campus: campusCode || null}),
     });
     const data = await res.json();
-    if (!data.success) { alert(data.error || 'Could not switch context.'); return; }
+    if (!data.success) { notify.fromError(data, 'Could not switch context.'); return; }
 
     // The session is gone — drop every cached record and re-authenticate.
     clearContextCaches();
@@ -379,7 +379,7 @@ async function switchContext(deptCode, campusCode) {
     }
     render();
   } catch (e) {
-    alert('Server error while switching context.');
+    showToast('error', 'Server error while switching institution. Please try again.');
   }
 }
 
@@ -399,10 +399,26 @@ async function promptSwitchContext() {
                    .filter(c => String(c.code).toUpperCase() !== String(appContext.campus || '').toUpperCase());
 
   if (others.length === 1) {
-    if (!confirm(`Switch to ${others[0].name}? You will be signed out and asked to log in again.`)) return;
+    const ok = await confirmAction({
+      title:        'Switch campus',
+      tone:         'warning',
+      icon:         '⇄',
+      message:      `Move this session to ${others[0].name}?`,
+      note:         'You will be signed out and asked to log in again.',
+      confirmLabel: 'Switch campus',
+    });
+    if (!ok) return;
     await switchContext(d.code, others[0].code);
     return;
   }
-  if (!confirm('Switch institution? You will be signed out and asked to log in again.')) return;
+  const ok = await confirmAction({
+    title:        'Switch institution',
+    tone:         'warning',
+    icon:         '⇄',
+    message:      'Return to the Department Selection screen?',
+    note:         'You will be signed out and asked to log in again.',
+    confirmLabel: 'Sign out & switch',
+  });
+  if (!ok) return;
   doLogout();
 }

@@ -54,17 +54,13 @@ async function amFetch(url, opts = {}) {
 }
 
 /* ─── Toast ──────────────────────────────────────────────────────── */
+/**
+ * Thin alias kept only so the existing amToast(msg, type) call sites keep
+ * reading naturally. There is exactly ONE notification system (spec §14/§51)
+ * — notifications.js — and this forwards straight into it.
+ */
 function amToast(msg, type = 'success') {
-  if (typeof showToast === 'function') { showToast(msg, type); return; }
-  const colors = { success: '#059669', error: '#dc2626', info: '#2563eb' };
-  const t = document.createElement('div');
-  t.style.cssText = `position:fixed;bottom:24px;right:24px;z-index:9999;padding:12px 20px;
-    border-radius:12px;font-size:13px;font-weight:600;color:#fff;
-    background:${colors[type] || colors.success};box-shadow:0 4px 20px rgba(0,0,0,.2);
-    transition:opacity .4s;`;
-  t.textContent = msg;
-  document.body.appendChild(t);
-  setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 400); }, 3000);
+  showToast(type, msg);
 }
 
 /* ================================================================
@@ -694,8 +690,13 @@ async function amToggleClassStatus(classId) {
 async function amDeleteClass(classId, name) {
   const cls = amHierarchy.find(c => c.id === classId);
   const secCount = cls?.sections?.length || 0;
-  const warn = secCount > 0 ? `\n\nThis will also delete ${secCount} section(s) within this class.` : '';
-  if (!confirm(`Delete class "${name}"?${warn}\n\nThis action cannot be undone.`)) return;
+  const warn = secCount > 0
+    ? `This also deletes ${secCount} section(s) inside this class. This action cannot be undone.`
+    : 'This action cannot be undone.';
+  if (!await confirmAction({
+    title:'Delete class', message:`Delete class "${name}"?`,
+    note:warn, confirmLabel:'Delete class',
+  })) return;
   try {
     await amFetch(`/api/classes/${classId}`, { method: 'DELETE' });
     amHierarchy = amHierarchy.filter(c => c.id !== classId);
@@ -794,8 +795,11 @@ async function amUpdateSection(secId) {
 
 async function amDeleteSection(secId, name) {
   // Note: students linked via this section (in Student Module) will have their section unlinked.
-  const warn = `\n\nStudents assigned to this section will have their section cleared.`;
-  if (!confirm(`Delete section "${name}"?${warn}`)) return;
+  const warn = `Students assigned to this section will have their section cleared.`;
+  if (!await confirmAction({
+    title:'Delete section', message:`Delete section "${name}"?`,
+    note:warn, confirmLabel:'Delete section',
+  })) return;
   try {
     await amFetch(`/api/sections/${secId}`, { method: 'DELETE' });
     for (const cls of amHierarchy) {
@@ -837,7 +841,7 @@ function _amDbtn(size = '') {
   const p = size === 'sm' ? '6px 12px' : size === 'xs' ? '4px 9px' : '9px 18px';
   const fs = size === 'xs' ? '11px' : '12px';
   return `padding:${p};background:${T.redL||'#fee2e2'};color:${T.red||'#dc2626'};
-    border:1px solid ${T.red||'#dc2626'}33;border-radius:8px;font-size:${fs};
+    border:1px solid ${alpha(T.red,20)};border-radius:8px;font-size:${fs};
     font-weight:700;cursor:pointer;transition:all .15s;font-family:inherit`;
 }
 function _amWarnBtn(size = '') {
@@ -849,7 +853,7 @@ function _amWarnBtn(size = '') {
 function _amGreenBtn(size = '') {
   const p = size === 'sm' ? '6px 12px' : size === 'xs' ? '4px 9px' : '9px 18px';
   return `padding:${p};background:${T.greenL||'#d1fae5'};color:${T.green||'#059669'};
-    border:1px solid ${T.green||'#059669'}33;border-radius:8px;font-size:11px;
+    border:1px solid ${alpha(T.green,20)};border-radius:8px;font-size:11px;
     font-weight:700;cursor:pointer;transition:all .15s;font-family:inherit`;
 }
 function _amSelectStyle() {

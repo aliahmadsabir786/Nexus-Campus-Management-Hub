@@ -23,20 +23,13 @@ let cmStudentPage    = 1;
 let cmLoading        = false;
 
 /* ── Toast helper (uses existing CMS toast if available) ──────── */
+/**
+ * Thin alias kept only so the existing cmToast(msg, type) call sites keep
+ * reading naturally. There is exactly ONE notification system (spec §14/§51)
+ * — notifications.js — and this forwards straight into it.
+ */
 function cmToast(msg, type='success'){
-  if(typeof showToast === 'function'){ showToast(msg, type); return; }
-  const colors = {
-    success: 'background:#059669;color:#fff',
-    error:   'background:#dc2626;color:#fff',
-    info:    'background:#2563eb;color:#fff',
-  };
-  const t = document.createElement('div');
-  t.style.cssText = `position:fixed;bottom:24px;right:24px;z-index:9999;padding:12px 20px;
-    border-radius:12px;font-size:13px;font-weight:600;box-shadow:0 4px 20px rgba(0,0,0,.2);
-    transition:all .3s;${colors[type]||colors.success}`;
-  t.textContent = msg;
-  document.body.appendChild(t);
-  setTimeout(()=>{ t.style.opacity='0'; setTimeout(()=>t.remove(),400); }, 3000);
+  showToast(type, msg);
 }
 
 /* ── API calls ────────────────────────────────────────────────── */
@@ -661,7 +654,11 @@ async function cmToggleClassStatus(classId){
 }
 
 async function cmDeleteClass(classId, name){
-  if(!confirm(`Delete class "${name}"?\nThis will also delete all sections and students.`)) return;
+  if(!await confirmAction({
+    title:'Delete class', message:`Delete class "${name}"?`,
+    note:'All sections and students inside it are deleted too. This cannot be undone.',
+    confirmLabel:'Delete class',
+  })) return;
   try {
     await cmFetch(`/api/classes/${classId}`,{method:'DELETE'});
     cmClasses = cmClasses.filter(c=>c.id!==classId);
@@ -765,7 +762,11 @@ async function cmUpdateSection(sectionId){
 }
 
 async function cmDeleteSection(sectionId, name){
-  if(!confirm(`Delete section "${name}"?\nAll students in this section will be removed.`)) return;
+  if(!await confirmAction({
+    title:'Delete section', message:`Delete section "${name}"?`,
+    note:'Every student in this section will be removed. This cannot be undone.',
+    confirmLabel:'Delete section',
+  })) return;
   try {
     await cmFetch(`/api/sections/${sectionId}`,{method:'DELETE'});
     cmSections = cmSections.filter(s=>s.id!==sectionId);
@@ -867,7 +868,10 @@ async function cmUpdateStudent(studentId){
 }
 
 async function cmDeleteStudent(studentId, name){
-  if(!confirm(`Remove student "${name}" from this section?`)) return;
+  if(!await confirmAction({
+    title:'Remove student', message:`Remove "${name}" from this section?`,
+    confirmLabel:'Remove',
+  })) return;
   try {
     await cmFetch(`/api/class-students/${studentId}`,{method:'DELETE'});
     cmStudents = cmStudents.filter(s=>s.id!==studentId);

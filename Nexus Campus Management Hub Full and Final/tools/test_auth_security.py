@@ -182,7 +182,10 @@ print("\n--- 6. UNAUTHENTICATED ACCESS (section 10) -------------------")
 anon = Client()
 for path in ("/api/students", "/api/teachers", "/api/classes", "/api/exams",
              "/api/notices", "/api/assignments", "/api/me",
-             "/api/complaints", "/api/sub-admins"):
+             "/api/complaints", "/api/subadmins", "/api/dashboard",
+             "/api/fees", "/api/attendance", "/api/grades",
+             "/api/reports/attendance", "/api/system-info",
+             "/api/classes/dropdown", "/api/context"):
     code, p = anon.get(path)
     check("GET %s without a session -> 401" % path, code == 401,
           "HTTP %s %s" % (code, p))
@@ -193,6 +196,12 @@ check("POST without a session -> 401", code == 401, "HTTP %s %s" % (code, p))
 code, p = anon.post("/api/context/switch", {"department": "INTER", "campus": "GIRLS"})
 check("context switch without a session -> 401", code == 401,
       "HTTP %s %s" % (code, p))
+code, p = anon.get("/api/institutions")
+check("the department list stays public (pre-login screen)", code == 200,
+      "HTTP %s" % code)
+check("the public department list leaks no records",
+      not any("student" in str(k).lower() or "password" in str(k).lower()
+              for d in rows_of(p) for k in d), rows_of(p)[:1])
 
 
 print("\n--- 7. CROSS-CONTEXT DATA ACCESS (sections 11, 12) -----------")
@@ -253,6 +262,115 @@ check("logout succeeds", code == 200 and p.get("success"), "HTTP %s %s" % (code,
 for path in ("/api/me", "/api/students", "/api/teachers"):
     code, p = boys.get(path)
     check("%s after logout -> 401" % path, code == 401, "HTTP %s %s" % (code, p))
+
+
+print("\n--- 9. DISABLED ACCOUNT (section 2: verify account status) ----")
+admin_b = Client()
+admin_b.login("admin", "admin", ADMIN_PWD, "INTER", "BOYS")
+code, p = admin_b.post("/api/portal/teacher/ITB-002", {"portal": "inactive"})
+if code != 200:
+    check("could disable a teacher for the test", False, "HTTP %s %s" % (code, p))
+else:
+    code, p = Client().login("teacher", "ITB-002", TEACHER_PWD, "INTER", "BOYS")
+    check("disabled teacher cannot log in even with the right password",
+          code in (401, 403) and not p.get("success"), "HTTP %s %s" % (code, p))
+    check("disabled teacher gets no session", "user" not in p, p)
+    admin_b.post("/api/portal/teacher/ITB-002", {"portal": "active"})
+    code, p = Client().login("teacher", "ITB-002", TEACHER_PWD, "INTER", "BOYS")
+    check("re-enabled teacher can log in again", code == 200 and p.get("success"),
+          "HTTP %s %s" % (code, p))
+
+
+print("\n--- 10. SAME USERNAME IN TWO INSTITUTIONS (section 5) --------")
+# The Boys and Girls campuses each create an "office1" sub-admin with a
+# DIFFERENT password.  Login must resolve the account by the selected
+# institution, not by whichever row the database returns first.
+admin_g = Client()
+admin_g.login("admin", "admin", ADMIN_PWD, "INTER", "GIRLS")
+
+made = {}
+for label, client in (("BOYS", admin_b), ("GIRLS", admin_g)):
+    code, p = client.post("/api/subadmins", {
+        "name": "Office " + label, "username": "office1",
+        "password": "pw-" + label.lower(), "permissions": ["students"],
+    })
+    check("%s campus can create the sub-admin 'office1'" % label,
+          code in (200, 201) and p.get("success"), "HTTP %s %s" % (code, p))
+    made[label] = p.get("id")
+
+if all(made.values()):
+    check("the two 'office1' accounts are different rows",
+          made["BOYS"] != made["GIRLS"], made)
+
+    code, p = Client().login("admin", "office1", "pw-boys", "INTER", "BOYS")
+    check("Boys office1 logs into Boys", code == 200 and p.get("success"),
+          "HTTP %s %s" % (code, p))
+    check("Boys office1 gets the Boys row",
+          (p.get("user") or {}).get("id") == made["BOYS"], p.get("user"))
+
+    code, p = Client().login("admin", "office1", "pw-girls", "INTER", "GIRLS")
+    check("Girls office1 logs into Girls", code == 200 and p.get("success"),
+          "HTTP %s %s" % (code, p))
+    check("Girls office1 gets the Girls row",
+          (p.get("user") or {}).get("id") == made["GIRLS"], p.get("user"))
+
+    denied(*Client().login("admin", "office1", "pw-boys", "INTER", "GIRLS"),
+           label="Boys office1 password on the Girls campus")
+    denied(*Client().login("admin", "office1", "pw-girls", "INTER", "BOYS"),
+           label="Girls office1 password on the Boys campus")
+    denied(*Client().login("admin", "office1", "pw-boys", "BS", None),
+           label="Boys office1 in the BS department")
+
+    # A Boys admin must not be able to delete the Girls campus's sub-admin.
+    code, p = admin_b.delete("/api/subadmins/" + str(made["GIRLS"]))
+    check("Boys admin cannot delete the Girls sub-admin", code in (403, 404),
+          "HTTP %s %s" % (code, p))
+
+    # Clean up: each institution removes its own.
+    for label, client in (("BOYS", admin_b), ("GIRLS", admin_g)):
+        code, p = client.delete("/api/subadmins/" + str(made[label]))
+        check("%s campus can delete its own sub-admin" % label,
+              code == 200 and p.get("success"), "HTTP %s %s" % (code, p))
+    code, p = Client().login("admin", "office1", "pw-boys", "INTER", "BOYS")
+    check("a deleted sub-admin can no longer log in",
+          code in (401, 403) and not p.get("success"), "HTTP %s %s" % (code, p))
+
+
+print("\n--- 11. DEEP CROSS-CONTEXT PROBES (sections 11, 12) ----------")
+# ids 9/10/11 are the Girls campus classes, 1..5 belong to BS;
+# sections 13..16 hang off the Girls classes.
+probe = Client()
+probe.login("admin", "admin", ADMIN_PWD, "INTER", "BOYS")
+for method, path in (
+        ("GET",    "/api/classes/9/sections"),
+        ("PUT",    "/api/classes/9"),
+        ("DELETE", "/api/classes/9"),
+        ("PATCH",  "/api/classes/9/status"),
+        ("GET",    "/api/sections/13/students"),
+        ("PUT",    "/api/sections/13"),
+        ("DELETE", "/api/sections/13"),
+        ("GET",    "/api/classes/1/sections"),
+        ("GET",    "/api/attendance/student/INT-G-001"),
+        ("GET",    "/api/grades/INT-G-001"),
+        ("POST",   "/api/fees/INT-G-001/status"),
+        ("POST",   "/api/fees/S004/status"),
+        ("GET",    "/api/teacher/ITG-001/students"),
+        ("GET",    "/api/timetable/ITG-001"),
+        ("POST",   "/api/portal/student/INT-G-001"),
+        ("POST",   "/api/portal/teacher/ITG-001")):
+    code, p = probe.call(method, path, None if method == "GET" else {})
+    check("%-6s %-38s is refused" % (method, path),
+          code in (400, 403, 404, 405), "HTTP %s %s" % (code, p))
+
+code, p = probe.get("/api/classes")
+cids = [c.get("id") for c in rows_of(p)]
+check("class list holds only this campus's classes",
+      set(cids) <= {6, 7, 8}, cids)
+code, p = probe.get("/api/dashboard")
+check("dashboard counts only this campus's students",
+      isinstance(p, dict) and p.get("totalStudents") == 4,
+      p if not isinstance(p, dict) else p.get("totalStudents"))
+probe.post("/api/logout")
 
 
 print("\n=============================================================")

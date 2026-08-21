@@ -284,11 +284,18 @@
     if (_legacyClose) _legacyClose.call(window);
   };
 
-  /* ── ESC closes the legacy modal too (spec §18) ── */
+  /* ── ESC + Tab trap for the legacy modal too (spec §18, §45) ──
+     The ad-hoc dialogs bind these on their own overlay; the legacy modal is
+     re-created by paintModal() on every open, so it is handled here at the
+     document level instead of re-binding after each repaint. */
   document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape') return;
+    if (e.key !== 'Escape' && e.key !== 'Tab') return;
     if (_stack.length) return;                  // its own handler deals with it
-    if (typeof modalState !== 'undefined' && modalState) window.closeModal();
+    if (!(typeof modalState !== 'undefined' && modalState)) return;
+    if (e.key === 'Escape') { window.closeModal(); return; }
+    const host  = document.getElementById('legacy-modal-host');
+    const panel = host && host.querySelector('[data-modal-panel]');
+    if (panel) _trapTab(e, panel);              // Tab cannot escape the dialog
   });
 
   /* ================================================================

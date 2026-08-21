@@ -9,7 +9,9 @@
 function renderLogin(){
   const sampleT=contextIdSample('teacher'), sampleS=contextIdSample('student');
   const hints={
-    admin:{h:"admin / admin123 (or sub-admin credentials)",i:"🛡️",l:"Admin"},
+    // Only the *shape* of the ID is hinted, never a password — the teacher
+    // and student hints already worked that way and admin now matches.
+    admin:{h:"Administrator or sub-admin username + your password",i:"🛡️",l:"Admin"},
     teacher:{h:`Teacher ID (e.g. ${sampleT}) + your password`,i:"👨‍🏫",l:"Teacher"},
     student:{h:`Student ID (e.g. ${sampleS}) + your password`,i:"🎓",l:"Student"}
   };
@@ -58,14 +60,16 @@ function renderLogin(){
       <div class="login-hint"><span>💡</span>${hints[loginRole].h}</div>
       <div style="margin-bottom:14px">
         <label class="login-label" for="l-uid">User ID</label>
-        <input id="l-uid" class="login-input" type="text" placeholder="${loginRole==="admin"?"admin or sub-admin username":loginRole==="teacher"?`e.g. ${sampleT}`:`e.g. ${sampleS}`}" style="box-sizing:border-box"/>
+        <input id="l-uid" class="login-input" type="text" autocomplete="username" placeholder="${loginRole==="admin"?"admin or sub-admin username":loginRole==="teacher"?`e.g. ${sampleT}`:`e.g. ${sampleS}`}" style="box-sizing:border-box" onkeydown="if(event.key==='Enter')doLogin()"/>
       </div>
       <div style="margin-bottom:20px">
         <label class="login-label" for="l-pwd">Password</label>
-        <input id="l-pwd" class="login-input" type="password" placeholder="Enter your password" style="box-sizing:border-box" onkeydown="if(event.key==='Enter')doLogin()"/>
+        <input id="l-pwd" class="login-input" type="password" autocomplete="current-password" placeholder="Enter your password" style="box-sizing:border-box" onkeydown="if(event.key==='Enter')doLogin()"/>
       </div>
-      ${loginErr?`<div class="login-err"><span>⚠️</span>${esc(loginErr)}</div>`:""}
-      <button type="button" class="login-submit" onclick="doLogin()">Sign In →</button>
+      <!-- Always present so a failed attempt can be reported without a
+           re-render — re-rendering would throw away what was typed. -->
+      <div id="login-err-slot" role="alert" aria-live="assertive">${loginErr?`<div class="login-err"><span>⚠️</span>${esc(loginErr)}</div>`:""}</div>
+      <button type="button" id="login-submit" class="login-submit" onclick="doLogin()">Sign In →</button>
       <div class="login-foot">
         <button type="button" onclick="toggleDarkMode()" class="dark-toggle" title="Toggle Dark Mode">${_darkMode?'☀️':'🌙'}</button>
         <span>${esc(appContext.institution)} · 2025–26 Academic Year</span>

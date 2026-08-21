@@ -309,15 +309,70 @@
 /* spec §19: the destructive confirmation must LOOK destructive */
 .nx-modal__panel--danger .nx-modal__head { border-bottom-color: var(--red); }
 
+/* A note carries the tone of the dialog it sits in: the warning colour is
+   what makes a delete confirmation read as destructive, but the very same
+   element is used for ordinary guidance in a success dialog, where red
+   would be alarming for no reason. */
 .nx-modal__note {
   margin-top: 12px;
   padding: 11px 13px;
   border-radius: 10px;
-  background: var(--red-light);
-  border: 1px solid var(--red);
-  color: var(--red);
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  color: var(--text2);
   font-size: 12px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+.nx-modal__panel--danger .nx-modal__note {
+  background: var(--red-light);
+  border-color: var(--red);
+  color: var(--red);
   font-weight: 700;
+}
+/* Amber on amber is the one pairing in this palette that does not reach a
+   readable contrast ratio, so the warning note borrows the body text colour
+   and lets the border and background carry the tone (spec §45). */
+.nx-modal__panel--warning .nx-modal__note {
+  background: var(--yellow-light);
+  border-color: var(--yellow);
+  color: var(--text);
+  font-weight: 700;
+}
+
+/* ----------------------------------------------------------------
+   Credential hand-over rows — _showNewCredentials() in api.js.
+   A server-generated password is shown exactly once, so it has to be
+   easy to read and easy to copy: monospace, generous spacing, and
+   user-select on so a double-click grabs the whole value.
+   ---------------------------------------------------------------- */
+.nx-cred {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 11px 13px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg2);
+}
+.nx-cred + .nx-cred { margin-top: 8px; }
+.nx-cred__k {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .4px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.nx-cred__v {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  word-break: break-all;
+  user-select: all;
+  -webkit-user-select: all;
 }
 
 @media (max-width: 600px) {

@@ -1,9 +1,27 @@
 /* ================================================================
    js/api.js  —  NEXus Solution CMS
    ================================================================ */
-async function loadAllDataFromDB() {
+
+/* ── Duplicate-load guard (spec §21) ─────────────────────────────
+   Several handlers finish by refreshing everything, and a fast double
+   click used to fire two identical waves of ~15 requests at the server.
+   Callers now share whichever load is already in flight. */
+let _loadInFlight = null;
+function loadAllDataFromDB() {
+  if (_loadInFlight) return _loadInFlight;
+  _loadInFlight = _loadAllDataFromDB().finally(() => { _loadInFlight = null; });
+  return _loadInFlight;
+}
+
+async function _loadAllDataFromDB() {
+  const isAdmin    = !!(currentUser && currentUser.role === 'admin');
+  const isFullAdm  = isAdmin && !currentUser.isSubAdmin;
   try {
-    const [stuRes, tchRes, examRes, noticeRes, compRes, assignRes, clsRes, secRes] = await Promise.all([
+    // One wave instead of four. Grades, fees and sub-admins do not depend on
+    // anything in this batch, so waiting for the students list before asking
+    // for them only added round trips (spec §21).
+    const [stuRes, tchRes, examRes, noticeRes, compRes, assignRes, clsRes, secRes,
+           gRes, fRes, saRes] = await Promise.all([
       fetch('/api/students'),
       fetch('/api/teachers'),
       fetch('/api/exams'),
@@ -12,6 +30,9 @@ async function loadAllDataFromDB() {
       fetch('/api/assignments'),
       fetch('/api/classes/dropdown'),
       fetch('/api/sections/dropdown'),
+      fetch('/api/grades'),
+      fetch('/api/fees'),
+      isFullAdm ? fetch('/api/subadmins') : Promise.resolve(null),
     ]);
 
     // ── Students ──
@@ -44,36 +65,39 @@ async function loadAllDataFromDB() {
     if (compRes.ok)   complaints  = (await compRes.json()).map(c=>({...c,date:c.created_date||c.date||''}));
     if (assignRes.ok) assignments = (await assignRes.json()).map(a=>({...a,dueDate:a.due_date||a.dueDate||'',createdAt:a.created_date||a.createdAt||''}));
 
-    // Grades load karo
-    const gRes = await fetch('/api/grades');
-    if (gRes.ok) grades = await gRes.json();
+    // Grades — response already collected above
+    if (gRes && gRes.ok) grades = await gRes.json();
 
-    // Attendance load karo — teacher ke liye subject-based + full week, admin ke liye class-based
-    let aUrl = `/api/attendance?date=${attFilter.date}`;
+    // Attendance — teacher: subject-based + full week; admin: class-based
     if (currentUser && currentUser.role === 'teacher') {
       // Teacher: load full week attendance for all their students (for graph + today marking)
       const weekFetches = weekDays.map(d => fetch(`/api/teacher/${currentUser.id}/students?date=${d}`));
       const weekResults = await Promise.allSettled(weekFetches);
-      weekResults.forEach((result, idx) => {
+      // The bodies are parsed here rather than in a detached .then(): the old
+      // version resolved after refreshContent() had already drawn the charts,
+      // so the week graph could render a day short (spec §21).
+      await Promise.all(weekResults.map(async (result, idx) => {
         const d = weekDays[idx];
-        if (result.status === 'fulfilled' && result.value.ok) {
-          result.value.json().then(subjStudents => {
-            subjStudents.forEach(s => {
-              if (!students.find(x => x.id === s.id)) {
-                students.push({...s, feeStatus:s.fee_status||s.feeStatus||'pending',
-                  subjectGroup:s.subject_group||s.subjectGroup||'Computer Science',
-                  rollNo:s.roll_no||s.rollNo||'', guardianPhone:s.guardian_phone||s.guardianPhone||'',
-                  portal:s.portal||'active', photo:s.photo||null});
-              }
-              if (!attendance[s.id]) attendance[s.id] = {};
-              attendance[s.id][d] = s.attendanceStatus || 'absent';
-            });
-          }).catch(()=>{});
-        }
-      });
-      // Also load today specifically (synchronously for immediate use)
-      const teacherSubjRes = await fetch(`/api/teacher/${currentUser.id}/students?date=${attFilter.date}`);
-      if (teacherSubjRes.ok) {
+        if (result.status !== 'fulfilled' || !result.value.ok) return;
+        let subjStudents = [];
+        try { subjStudents = await result.value.json(); } catch (_) { return; }
+        subjStudents.forEach(s => {
+          if (!students.find(x => x.id === s.id)) {
+            students.push({...s, feeStatus:s.fee_status||s.feeStatus||'pending',
+              subjectGroup:s.subject_group||s.subjectGroup||'Computer Science',
+              rollNo:s.roll_no||s.rollNo||'', guardianPhone:s.guardian_phone||s.guardianPhone||'',
+              portal:s.portal||'active', photo:s.photo||null});
+          }
+          if (!attendance[s.id]) attendance[s.id] = {};
+          attendance[s.id][d] = s.attendanceStatus || 'absent';
+        });
+      }));
+      // The selected day is usually one of the week days above, in which case
+      // it is already in hand — only fetch it when it really is missing.
+      const teacherSubjRes = weekDays.includes(attFilter.date)
+        ? null
+        : await fetch(`/api/teacher/${currentUser.id}/students?date=${attFilter.date}`);
+      if (teacherSubjRes && teacherSubjRes.ok) {
         const subjStudents = await teacherSubjRes.json();
         subjStudents.forEach(s => {
           if (!students.find(x => x.id === s.id)) {
@@ -100,17 +124,18 @@ async function loadAllDataFromDB() {
       // Admin: load all attendance for selected class + full week for charts
       const weekAdminFetches = weekDays.map(d => fetch(`/api/attendance?date=${d}`));
       const weekAdminResults = await Promise.allSettled(weekAdminFetches);
-      weekAdminResults.forEach((result, idx) => {
+      // Awaited for the same reason as the teacher branch above: the charts are
+      // drawn as soon as this function returns.
+      await Promise.all(weekAdminResults.map(async (result, idx) => {
         const d = weekDays[idx];
-        if (result.status === 'fulfilled' && result.value.ok) {
-          result.value.json().then(attRows => {
-            attRows.forEach(r => {
-              if (!attendance[r.id]) attendance[r.id] = {};
-              attendance[r.id][d] = r.status;
-            });
-          }).catch(()=>{});
-        }
-      });
+        if (result.status !== 'fulfilled' || !result.value.ok) return;
+        let attRows = [];
+        try { attRows = await result.value.json(); } catch (_) { return; }
+        attRows.forEach(r => {
+          if (!attendance[r.id]) attendance[r.id] = {};
+          attendance[r.id][d] = r.status;
+        });
+      }));
       const aRes = await fetch(`/api/attendance?cls=${attFilter.cls}&date=${attFilter.date}`);
       if (aRes.ok) {
         const attRows = await aRes.json();
@@ -121,15 +146,11 @@ async function loadAllDataFromDB() {
       }
     }
 
-    // Sub-admins load karo
-    if (currentUser && currentUser.role === 'admin' && !currentUser.isSubAdmin) {
-      const saRes = await fetch('/api/subadmins');
-      if (saRes.ok) subAdmins = await saRes.json();
-    }
+    // Sub-admins — only requested for a full admin, so the guard is the null check
+    if (saRes && saRes.ok) subAdmins = await saRes.json();
 
-    // Fee data load karo
-    const fRes = await fetch('/api/fees');
-    if (fRes.ok) {
+    // Fee data — response already collected above
+    if (fRes && fRes.ok) {
       const feeData = await fRes.json();
       feeData.forEach(item => {
         const s = item.student;
@@ -165,43 +186,87 @@ async function loadAllDataFromDB() {
 // credentials as a *claim*.  /api/login validates it against the
 // departments/campuses tables and against the account's own institution,
 // then answers with the authoritative context we display (spec §13/§14).
+/**
+ * Report a failed sign-in.
+ *
+ * Deliberately does NOT call render(): a re-render rebuilds the whole form
+ * and throws away the User ID the person just typed, which makes a genuine
+ * typo feel like a much bigger failure than it is.  The message is written
+ * straight into the always-present #login-err-slot instead, and also raised
+ * as a toast so it is announced even if the slot is scrolled out of view
+ * (spec §13 — no browser alerts).
+ *
+ * The wording is whatever the server sent.  routes/auth.py answers every
+ * bad-credential case with the same generic "Invalid username or password"
+ * so nothing here can leak whether the account exists.
+ */
+function _loginFailed(message) {
+  loginErr = message;
+  const slot = document.getElementById('login-err-slot');
+  if (slot) {
+    slot.innerHTML = `<div class="login-err"><span>⚠️</span>${esc(message)}</div>`;
+  }
+  const pwd = document.getElementById('l-pwd');
+  if (pwd) { pwd.value = ''; pwd.focus(); }
+  showToast('error', message);
+}
+
 async function doLogin() {
+  const btn = document.getElementById('login-submit');
   const uid = (document.getElementById('l-uid')?.value || '').trim();
   const pwd = (document.getElementById('l-pwd')?.value || '').trim();
-  loginErr = '';
-  try {
-    const res = await fetch('/api/login', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({
-        role: loginRole, username: uid, password: pwd,
-        department: appContext.departmentCode || appContext.department,
-        campus:     appContext.campus,
-      })
-    });
-    const data = await res.json();
-    if (data.success) {
-      currentUser = {
-        id: data.user.id,
-        role: data.user.role,
-        name: data.user.name,
-        isSubAdmin: data.user.isSubAdmin || false,
-        permissions: data.user.permissions || [],
-        context: data.user.context || null
-      };
-      hydrateContext(data.user.context);
-      clearContextCaches();
-      currentPage = 'dashboard';
-      render();
-      await loadAllDataFromDB();
-    } else {
-      loginErr = data.error || 'Invalid credentials.';
-      render();
-    }
-  } catch(e) {
-    loginErr = 'Server error. Make sure Flask is running.';
-    render();
+
+  // Empty fields never reach the server — there is nothing to authenticate
+  // and a round trip would only slow the correction down.
+  if (!uid || !pwd) {
+    _loginFailed(!uid && !pwd ? 'Enter your user ID and password.'
+                : !uid       ? 'Enter your user ID.'
+                :              'Enter your password.');
+    if (!uid) document.getElementById('l-uid')?.focus();
+    return;
   }
+
+  loginErr = '';
+  const slot = document.getElementById('login-err-slot');
+  if (slot) slot.innerHTML = '';
+
+  await withBusy(btn, async () => {
+    try {
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({
+          role: loginRole, username: uid, password: pwd,
+          department: appContext.departmentCode || appContext.department,
+          campus:     appContext.campus,
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      // A session exists only if the server says so — every failure path,
+      // including 401/403, lands in _loginFailed (spec §2).
+      if (res.ok && data.success && data.user) {
+        currentUser = {
+          id: data.user.id,
+          role: data.user.role,
+          name: data.user.name,
+          isSubAdmin: data.user.isSubAdmin || false,
+          permissions: data.user.permissions || [],
+          context: data.user.context || null
+        };
+        hydrateContext(data.user.context);
+        clearContextCaches();
+        currentPage = 'dashboard';
+        loginErr = '';
+        render();
+        showToast('success', `Welcome back, ${currentUser.name}.`);
+        await loadAllDataFromDB();
+      } else {
+        _loginFailed(data.error || 'Invalid username or password');
+      }
+    } catch(e) {
+      _loginFailed('Could not reach the server. Please check your connection and try again.');
+    }
+  }, 'Signing in…');
 }
 
 // ── LOGOUT ──
@@ -544,8 +609,9 @@ async function updateGrade(sid, sub, field, val) {
 
 // ── ADD EXAM ──
 async function submitAddExam() {
+  const btn = _submitBtn();
   const title = (document.getElementById('f-title')?.value || '').trim();
-  if (!title) { alert('Please enter exam title'); return; }
+  if (!title) { showToast('warning', 'Enter an exam title.'); return; }
   const body = {
     title, subject: document.getElementById('f-subject')?.value || '',
     cls: document.getElementById('f-cls')?.value || 'CS-A',
@@ -555,58 +621,94 @@ async function submitAddExam() {
     room: document.getElementById('f-room')?.value || '',
     totalMarks: document.getElementById('f-totalMarks')?.value || '100',
   };
-  try {
-    const res = await fetch('/api/exams', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-    const data = await res.json();
-    if (data.success) { closeModal(); await loadAllDataFromDB(); }
-    else { alert('Error: ' + (data.error || 'Unknown')); }
-  } catch(e) { alert('Server error: ' + e.message); }
+  await withBusy(btn, async () => {
+    try {
+      const res = await fetch('/api/exams', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+      const data = await res.json();
+      if (!res.ok || !data.success) { _writeFailed(data, 'Could not schedule the exam.'); return; }
+      closeModal();
+      await loadAllDataFromDB();
+      showToast('success', `Exam "${title}" scheduled.`);
+    } catch(e) { showToast('error', 'Could not reach the server. Please try again.'); }
+  }, 'Saving…');
 }
 
 // ── DELETE EXAM ──
 async function delExam(eid) {
+  const x = exams.find(e => e.id === eid);
+  if (!await confirmAction({
+    title:   'Delete exam',
+    message: `Delete "${x ? x.title : 'this exam'}" from the schedule?`,
+    note:    'Marks already recorded against this exam are removed too. This cannot be undone.',
+    confirmLabel: 'Delete exam',
+  })) return;
   try {
-    await fetch(`/api/exams/${eid}`, {method:'DELETE'});
-    exams = exams.filter(e => e.id !== eid); refreshContent();
-  } catch(e) { alert('Error: ' + e.message); }
+    const res  = await fetch(`/api/exams/${eid}`, {method:'DELETE'});
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.success === false) { _writeFailed(data, 'Could not delete the exam.'); return; }
+    exams = exams.filter(e => e.id !== eid);
+    refreshContent();
+    showToast('success', 'Exam deleted.');
+  } catch(e) { showToast('error', 'Could not reach the server. Please try again.'); }
 }
 
 // ── ADD NOTICE ──
 async function submitAddNotice() {
+  const btn = _submitBtn();
   const title = (document.getElementById('f-title')?.value || '').trim();
-  if (!title) { alert('Please enter notice title'); return; }
+  if (!title) { showToast('warning', 'Enter a notice title.'); return; }
   const body = {
     title, type: document.getElementById('f-type')?.value || 'academic',
     author: document.getElementById('f-author')?.value || 'Admin',
   };
-  try {
-    const res = await fetch('/api/notices', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-    const data = await res.json();
-    if (data.success) { closeModal(); await loadAllDataFromDB(); }
-    else { alert('Error: ' + (data.error || 'Unknown')); }
-  } catch(e) { alert('Server error: ' + e.message); }
+  await withBusy(btn, async () => {
+    try {
+      const res = await fetch('/api/notices', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+      const data = await res.json();
+      if (!res.ok || !data.success) { _writeFailed(data, 'Could not publish the notice.'); return; }
+      closeModal();
+      await loadAllDataFromDB();
+      showToast('success', 'Notice published.');
+    } catch(e) { showToast('error', 'Could not reach the server. Please try again.'); }
+  }, 'Publishing…');
 }
 
 // ── DELETE NOTICE ──
 async function delNotice(nid) {
+  const n = notices.find(x => x.id === nid);
+  if (!await confirmAction({
+    title:   'Delete notice',
+    message: `Delete "${n ? n.title : 'this notice'}"?`,
+    confirmLabel: 'Delete notice',
+  })) return;
   try {
-    await fetch(`/api/notices/${nid}`, {method:'DELETE'});
-    notices = notices.filter(n => n.id !== nid); refreshContent();
-  } catch(e) { alert('Error: ' + e.message); }
+    const res  = await fetch(`/api/notices/${nid}`, {method:'DELETE'});
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.success === false) { _writeFailed(data, 'Could not delete the notice.'); return; }
+    notices = notices.filter(x => x.id !== nid);
+    refreshContent();
+    showToast('success', 'Notice deleted.');
+  } catch(e) { showToast('error', 'Could not reach the server. Please try again.'); }
 }
 
 // ── ADD COMPLAINT ──
 async function submitComplaint() {
+  const btn = _submitBtn();
   const sid = document.getElementById('f-studentId')?.value || formData.studentId || '';
   const msg = (document.getElementById('f-message')?.value || '').trim();
-  if (!sid || !msg) { alert('Please select a student and write a message'); return; }
-  try {
-    const res = await fetch('/api/complaints', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({studentId: sid, message: msg})});
-    const data = await res.json();
-    if (data.success) { closeModal(); await loadAllDataFromDB(); }
-    else { alert('Error: ' + (data.error || 'Unknown')); }
-  } catch(e) { alert('Server error: ' + e.message); }
+  if (!sid) { showToast('warning', 'Select a student first.'); return; }
+  if (!msg) { showToast('warning', 'Write the complaint before sending it.'); return; }
+  await withBusy(btn, async () => {
+    try {
+      const res = await fetch('/api/complaints', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({studentId: sid, message: msg})});
+      const data = await res.json();
+      if (!res.ok || !data.success) { _writeFailed(data, 'Could not file the complaint.'); return; }
+      closeModal();
+      await loadAllDataFromDB();
+      showToast('success', 'Complaint filed.');
+    } catch(e) { showToast('error', 'Could not reach the server. Please try again.'); }
+  }, 'Sending…');
 }
 
 // ── FEE STATUS ──
@@ -614,43 +716,80 @@ async function setFeeStatus(sid, status) {
   const s = students.find(x => x.id === sid); if (s) s.feeStatus = status;
   refreshContent();
   try {
-    await fetch(`/api/fees/${sid}/status`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({status})});
+    const res  = await fetch(`/api/fees/${sid}/status`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({status})});
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.success === false) { _writeFailed(data, 'Could not save the fee status.'); }
     await loadAllDataFromDB();
-  } catch(e) { console.error('Fee error:', e); }
+  } catch(e) {
+    console.error('Fee error:', e);
+    showToast('error', 'Could not reach the server — the fee status was not saved.');
+  }
 }
-async function markPaid(sid) { setFeeStatus(sid, 'paid'); }
-async function revertFee(sid) { if (!confirm('Revert to Pending?')) return; setFeeStatus(sid, 'pending'); }
+async function markPaid(sid) { await setFeeStatus(sid, 'paid'); showToast('success', 'Fee marked as paid.'); }
+async function revertFee(sid) {
+  if (!await confirmAction({
+    title:   'Revert fee status',
+    tone:    'warning',
+    icon:    '↺',
+    message: 'Set this fee back to Pending?',
+    note:    'The recorded payment date is cleared.',
+    confirmLabel: 'Revert to pending',
+  })) return;
+  await setFeeStatus(sid, 'pending');
+  showToast('success', 'Fee reverted to pending.');
+}
 
 // ── FEE PLAN ──
 async function submitCreateFeePlan(sid) {
+  const btn = _submitBtn();
   const tf = Number(document.getElementById('f-totalFee')?.value || 0);
   const sess = (document.getElementById('f-session')?.value || '2025-26').trim();
   const d1 = document.getElementById('f-due1')?.value || '';
   const d2 = document.getElementById('f-due2')?.value || '';
   const d3 = document.getElementById('f-due3')?.value || '';
-  if (!tf || tf < 1) { alert('Please enter a valid total fee.'); return; }
-  if (!d1 || !d2 || !d3) { alert('Please fill all three due dates.'); return; }
-  try {
-    const res = await fetch(`/api/fees/${sid}/plan`, {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({totalFee: tf, session: sess, due1: d1, due2: d2, due3: d3})});
-    const data = await res.json();
-    if (data.success) { alert('Fee plan created! 3 installment vouchers ready.'); closeModal(); await loadAllDataFromDB(); }
-    else { alert('Error: ' + (data.error || 'Unknown')); }
-  } catch(e) { alert('Server error: ' + e.message); }
+  if (!tf || tf < 1) { showToast('warning', 'Enter a valid total fee.'); return; }
+  if (!d1 || !d2 || !d3) { showToast('warning', 'Fill all three due dates.'); return; }
+  await withBusy(btn, async () => {
+    try {
+      const res = await fetch(`/api/fees/${sid}/plan`, {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({totalFee: tf, session: sess, due1: d1, due2: d2, due3: d3})});
+      const data = await res.json();
+      if (!res.ok || !data.success) { _writeFailed(data, 'Could not create the fee plan.'); return; }
+      closeModal();
+      await loadAllDataFromDB();
+      showToast('success', 'Fee plan created — 3 installment vouchers are ready to print.');
+    } catch(e) { showToast('error', 'Could not reach the server. Please try again.'); }
+  }, 'Saving…');
 }
 
 // ── MARK INSTALLMENT PAID ──
 async function markInstallmentPaid(sid, no) {
   try {
-    await fetch(`/api/fees/${sid}/installment/${no}/pay`, {method:'POST'});
+    const res  = await fetch(`/api/fees/${sid}/installment/${no}/pay`, {method:'POST'});
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.success === false) { _writeFailed(data, 'Could not record the payment.'); return; }
     await loadAllDataFromDB();
+    showToast('success', `Installment ${no} marked as paid.`);
     setTimeout(() => printInstallmentReceipt(sid, no), 300);
-  } catch(e) { alert('Error: ' + e.message); }
+  } catch(e) { showToast('error', 'Could not reach the server. Please try again.'); }
 }
 
-async function revertInstallmentPaid(sid,no){
-  if(!confirm('Revert installment to pending?'))return;
-  try{await fetch(`/api/fees/${sid}/installment/${no}/revert`,{method:'POST'});await loadAllDataFromDB();}catch(e){alert('Error: '+e.message);}
+async function revertInstallmentPaid(sid, no) {
+  if (!await confirmAction({
+    title:   'Revert installment',
+    tone:    'warning',
+    icon:    '↺',
+    message: `Mark installment ${no} as pending again?`,
+    note:    'The payment date and receipt number are cleared.',
+    confirmLabel: 'Revert to pending',
+  })) return;
+  try {
+    const res  = await fetch(`/api/fees/${sid}/installment/${no}/revert`, {method:'POST'});
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.success === false) { _writeFailed(data, 'Could not revert the installment.'); return; }
+    await loadAllDataFromDB();
+    showToast('success', `Installment ${no} reverted to pending.`);
+  } catch(e) { showToast('error', 'Could not reach the server. Please try again.'); }
 }
 
 // ── PORTAL TOGGLE ──
@@ -659,69 +798,87 @@ async function togglePortal(type, id) {
     const url = type === 'student' ? `/api/portal/student/${id}` : `/api/portal/teacher/${id}`;
     const res = await fetch(url, {method:'POST'});
     const data = await res.json();
-    if (data.success) {
-      if (type === 'student') { const s = students.find(x=>x.id===id); if(s) s.portal = data.portal; }
-      else { const t = teachers.find(x=>x.id===id); if(t) t.portal = data.portal; }
-      refreshContent();
-    }
-  } catch(e) { alert('Error: ' + e.message); }
+    if (!res.ok || !data.success) { _writeFailed(data, 'Could not change portal access.'); return; }
+    if (type === 'student') { const s = students.find(x=>x.id===id); if(s) s.portal = data.portal; }
+    else { const t = teachers.find(x=>x.id===id); if(t) t.portal = data.portal; }
+    refreshContent();
+    showToast('success', data.portal === 'active' ? 'Portal access enabled.' : 'Portal access disabled.');
+  } catch(e) { showToast('error', 'Could not reach the server. Please try again.'); }
 }
 
 // ── SUB-ADMINS ──
 async function submitAddSubAdmin() {
+  const btn = _submitBtn();
   const name = (document.getElementById('f-name')?.value || '').trim();
   const username = (document.getElementById('f-username')?.value || '').trim();
   const password = (document.getElementById('f-password')?.value || '').trim();
-  if (!name) { alert('Please enter a name'); return; }
-  if (!username) { alert('Please enter a username'); return; }
-  if (!password) { alert('Please enter a password'); return; }
-  if (username === 'admin') { alert("Username 'admin' is reserved"); return; }
-  try {
-    const res = await fetch('/api/subadmins', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({name, username, password, permissions: subAdminPermsSelected})});
-    const data = await res.json();
-    if (data.success) {
-      alert(`✅ Sub-Admin Created!
-
-Username: ${username}
-Password: ${password}`);
-      closeModal(); await loadAllDataFromDB();
-    } else { alert('Error: ' + (data.error || 'Unknown')); }
-  } catch(e) { alert('Server error: ' + e.message); }
+  if (!name) { showToast('warning', 'Enter a name.'); return; }
+  if (!username) { showToast('warning', 'Enter a username.'); return; }
+  if (!password) { showToast('warning', 'Enter a password.'); return; }
+  if (username === 'admin') { showToast('error', "The username 'admin' is reserved for the main administrator."); return; }
+  await withBusy(btn, async () => {
+    try {
+      const res = await fetch('/api/subadmins', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({name, username, password, permissions: subAdminPermsSelected})});
+      const data = await res.json();
+      if (!res.ok || !data.success) { _writeFailed(data, 'Could not create the sub-admin.'); return; }
+      closeModal();
+      await loadAllDataFromDB();
+      // The password was typed by the admin, so it is deliberately NOT echoed back (spec §3).
+      showToast('success', `Sub-admin "${name}" created. They sign in as ${username} on the Admin tab.`);
+    } catch(e) { showToast('error', 'Could not reach the server. Please try again.'); }
+  }, 'Creating…');
 }
 
 async function submitEditSubAdmin(id) {
+  const btn = _submitBtn();
   const name = (document.getElementById('f-name')?.value || '').trim();
   const username = (document.getElementById('f-username')?.value || '').trim();
   const pwd = (document.getElementById('f-password')?.value || '').trim();
-  if (!name) { alert('Name cannot be empty'); return; }
-  if (!username) { alert('Username cannot be empty'); return; }
+  if (!name) { showToast('warning', 'Name cannot be empty.'); return; }
+  if (!username) { showToast('warning', 'Username cannot be empty.'); return; }
   const body = {name, username, permissions: subAdminPermsSelected};
   if (pwd) body.password = pwd;
-  try {
-    const res = await fetch(`/api/subadmins/${id}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-    const data = await res.json();
-    if (data.success) {
+  await withBusy(btn, async () => {
+    try {
+      const res = await fetch(`/api/subadmins/${id}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+      const data = await res.json();
+      if (!res.ok || !data.success) { _writeFailed(data, 'Could not update the sub-admin.'); return; }
       if (currentUser && currentUser.id === id) { currentUser.name = name; currentUser.permissions = [...subAdminPermsSelected]; }
-      alert('✅ Sub-admin updated!'); closeModal(); await loadAllDataFromDB();
-    } else { alert('Error: ' + (data.error || 'Unknown')); }
-  } catch(e) { alert('Server error: ' + e.message); }
+      closeModal();
+      await loadAllDataFromDB();
+      showToast('success', `Sub-admin "${name}" updated.`);
+    } catch(e) { showToast('error', 'Could not reach the server. Please try again.'); }
+  }, 'Saving…');
 }
 
 async function toggleSubAdmin(id) {
   try {
     const res = await fetch(`/api/subadmins/${id}/toggle`, {method:'POST'});
     const data = await res.json();
-    if (data.success) { const sa = subAdmins.find(x=>x.id===id); if(sa) sa.portal = data.portal; refreshContent(); }
-  } catch(e) { alert('Error: ' + e.message); }
+    if (!res.ok || !data.success) { _writeFailed(data, 'Could not change that account.'); return; }
+    const sa = subAdmins.find(x=>x.id===id); if(sa) sa.portal = data.portal;
+    refreshContent();
+    showToast('success', data.portal === 'active' ? 'Sub-admin enabled.' : 'Sub-admin disabled.');
+  } catch(e) { showToast('error', 'Could not reach the server. Please try again.'); }
 }
 
 async function delSubAdmin(id) {
-  if (!confirm('Delete this sub-admin?')) return;
+  const sa = subAdmins.find(x => x.id === id);
+  if (!await confirmAction({
+    title:   'Delete sub-admin',
+    message: `Delete sub-admin "${sa ? sa.name : id}"?`,
+    note:    'Their account and permissions are removed. This cannot be undone.',
+    confirmLabel: 'Delete sub-admin',
+  })) return;
   try {
-    await fetch(`/api/subadmins/${id}`, {method:'DELETE'});
-    subAdmins = subAdmins.filter(x => x.id !== id); refreshContent();
-  } catch(e) { alert('Error: ' + e.message); }
+    const res  = await fetch(`/api/subadmins/${id}`, {method:'DELETE'});
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.success === false) { _writeFailed(data, 'Could not delete the sub-admin.'); return; }
+    subAdmins = subAdmins.filter(x => x.id !== id);
+    refreshContent();
+    showToast('success', 'Sub-admin deleted.');
+  } catch(e) { showToast('error', 'Could not reach the server. Please try again.'); }
 }
 
 // ── CHANGE PASSWORD ──
@@ -746,27 +903,38 @@ async function submitChangePassword() {
 
 // ── CREATE ASSIGNMENT ──
 async function submitCreateAssignment() {
+  const btn = _submitBtn();
   const title = (document.getElementById('f-title')?.value || '').trim();
-  if (!title) { alert('Please enter assignment title'); return; }
+  if (!title) { showToast('warning', 'Enter an assignment title.'); return; }
   const dueDate = document.getElementById('f-dueDate')?.value || '';
-  if (!dueDate) { alert('Please set a due date'); return; }
+  if (!dueDate) { showToast('warning', 'Set a due date.'); return; }
   const body = {
     title, dueDate,
     subject: document.getElementById('f-subject')?.value || '',
     cls: document.getElementById('f-cls')?.value || 'CS-A',
     description: document.getElementById('f-description')?.value || '',
   };
-  try {
-    const res = await fetch('/api/assignments', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-    const data = await res.json();
-    if (data.success) { closeModal(); await loadAllDataFromDB(); }
-    else { alert('Error: ' + (data.error || 'Unknown')); }
-  } catch(e) { alert('Server error: ' + e.message); }
+  await withBusy(btn, async () => {
+    try {
+      const res = await fetch('/api/assignments', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+      const data = await res.json();
+      if (!res.ok || !data.success) { _writeFailed(data, 'Could not create the assignment.'); return; }
+      closeModal();
+      await loadAllDataFromDB();
+      showToast('success', `Assignment "${title}" created.`);
+    } catch(e) { showToast('error', 'Could not reach the server. Please try again.'); }
+  }, 'Saving…');
 }
 
 // ── ASSIGNMENT SUBMIT (STUDENT) ──
 async function submitAssignment(assignmentId, studentId, studentName, cls, input) {
   const file = input.files[0]; if (!file) return;
+  if (file.size > 5 * 1024 * 1024) {
+    showToast('warning', 'That file is over 5 MB. Please upload a smaller one.');
+    input.value = '';
+    return;
+  }
+  showToast('info', `Uploading ${file.name}…`, {duration: 2000});
   const reader = new FileReader();
   reader.onload = async ev => {
     try {
@@ -774,10 +942,12 @@ async function submitAssignment(assignmentId, studentId, studentName, cls, input
         headers:{'Content-Type':'application/json'},
         body: JSON.stringify({fileName: file.name, fileData: ev.target.result})});
       const data = await res.json();
-      if (data.success) { alert('✅ Assignment submitted!'); await loadAllDataFromDB(); }
-      else { alert('Error: ' + (data.error || 'Unknown')); }
-    } catch(e) { alert('Server error: ' + e.message); }
+      if (!res.ok || !data.success) { _writeFailed(data, 'Could not submit the assignment.'); return; }
+      await loadAllDataFromDB();
+      showToast('success', 'Assignment submitted.');
+    } catch(e) { showToast('error', 'Could not reach the server. Please try again.'); }
   };
+  reader.onerror = () => showToast('error', 'That file could not be read.');
   reader.readAsDataURL(file);
 }
 

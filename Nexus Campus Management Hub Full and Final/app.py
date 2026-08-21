@@ -71,14 +71,20 @@ def create_app():
 app = create_app()
 
 if __name__ == "__main__":
+    import os
+
     from utils.migrate import run_migrations
     from utils.seed import seed_sample_passwords
     from utils.seed_institutions import seed_institution_samples
 
+    # 5000 stays the default; PORT lets a second instance run alongside it
+    # (handy when one copy is already serving on 5000).
+    port = int(os.environ.get("PORT", 5000))
+
     print("=" * 62)
     print("  NEXus Solution - Campus Management Hub")
     print("  BS Department  |  Intermediate -> Boys - Girls Campus")
-    print("  Flask + MySQL  |  http://127.0.0.1:5000")
+    print(f"  Flask + MySQL  |  http://127.0.0.1:{port}")
     print("=" * 62)
 
     # Additive, idempotent schema migrations — never destructive.
@@ -98,4 +104,4 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"[warn] Institution seed skipped: {e}")
 
-    app.run(debug=True, port=5000)
+    app.run(debug=True, port=port)

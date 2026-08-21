@@ -64,9 +64,9 @@ function renderShell(){
     <div class="main-content" style="flex:1;overflow-y:auto;overflow-x:hidden;padding:${isMobile?"12px":"28px"};min-width:0" id="main-content">${renderPage()}</div>
   </div>
 </div>
-<!-- Host for the legacy `modalState` dialogs. Kept as its own node so
+<!-- Host for the legacy modalState dialogs. Kept as its own node so
      paintModal() (modal.js) can repaint just this instead of the whole
-     shell every time a dialog opens or closes — spec §22. -->
+     shell every time a dialog opens or closes - spec 22. -->
 <div id="legacy-modal-host">${renderModal()}</div>`;}
 
 function getNav(){

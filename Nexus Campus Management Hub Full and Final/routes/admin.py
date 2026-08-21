@@ -71,12 +71,29 @@ def _ctx_students(cls="ALL"):
 # ================================================================
 # SUB-ADMINS
 # ================================================================
+def _username_taken(username, dept_id, campus_id, exclude_id=None):
+    """
+    Is this sub-admin username already used *inside this institution*?
+
+    Usernames are unique per department/campus (migration 002), so the Boys
+    and Girls campuses can each have their own "office" account.  Login tells
+    them apart by the selected context — see _authenticate() in routes/auth.py.
+    """
+    sql  = ("SELECT id FROM sub_admins WHERE username=%s "
+            "AND department_id=%s AND campus_id<=>%s")
+    args = [username, dept_id, campus_id]
+    if exclude_id:
+        sql += " AND id<>%s"
+        args.append(exclude_id)
+    return query(sql, args, one=True) is not None
+
+
 @admin_bp.route("/api/subadmins", methods=["GET"])
 @admin_required
 def api_get_subadmins():
-    # Sub-admins belong to the institution that created them.  Accounts with
-    # no context (legacy/global) are intentionally not listed here — they are
-    # authorised at login by authorize_user_context(allow_global=True).
+    # Sub-admins belong to the institution that created them; an account with
+    # no context is not listed here and, since authorize_user_context() fails
+    # closed on a missing department, cannot log in either.
     clause, params = ctx_clause()
     rows = query(
         "SELECT id,name,username,permissions,portal,created_at "
@@ -98,14 +115,12 @@ def api_add_subadmin():
         return jsonify({"error": "All fields required"}), 400
     if username == "admin":
         return jsonify({"error": "Reserved username"}), 400
-    # Usernames stay globally unique: login resolves a sub-admin by username
-    # alone, so a duplicate across campuses would be ambiguous.
-    if query("SELECT id FROM sub_admins WHERE username=%s", (username,), one=True):
-        return jsonify({"error": "Username already taken"}), 400
 
     dept_id, campus_id = write_context()
     if not dept_id:
         return jsonify({"error": "No institution context — please sign in again"}), 403
+    if _username_taken(username, dept_id, campus_id):
+        return jsonify({"error": "Username already taken"}), 400
 
     said = "SA" + str(ts())
     query(
@@ -128,9 +143,23 @@ def api_edit_subadmin(said):
     data       = request.get_json() or {}
     sets, args = [], []
 
-    if "name"     in data: sets.append("name=%s");         args.append(data["name"])
-    if "username" in data: sets.append("username=%s");     args.append(data["username"])
-    if "password" in data: sets.append("password_hash=%s"); args.append(generate_password_hash(data["password"]))
+    if "username" in data:
+        new_name = str(data["username"]).strip()
+        if not new_name:
+            return jsonify({"error": "Username cannot be empty"}), 400
+        if new_name == "admin":
+            return jsonify({"error": "Reserved username"}), 400
+        dept_id, campus_id = write_context()
+        if _username_taken(new_name, dept_id, campus_id, exclude_id=said):
+            return jsonify({"error": "Username already taken"}), 400
+        sets.append("username=%s"); args.append(new_name)
+
+    if "name" in data: sets.append("name=%s"); args.append(data["name"])
+    if "password" in data:
+        # Hashed with the project's existing Werkzeug helper — a sub-admin
+        # password is never written to the database in readable form.
+        sets.append("password_hash=%s")
+        args.append(generate_password_hash(data["password"]))
     if "permissions" in data:
         perms = [p for p in data["permissions"] if p in SUB_ADMIN_PERMS]
         sets.append("permissions=%s"); args.append(json.dumps(perms))

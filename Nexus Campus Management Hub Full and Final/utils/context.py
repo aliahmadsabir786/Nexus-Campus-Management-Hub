@@ -44,8 +44,9 @@ Inherited via FKs (no duplicated columns):
           submissions                     → assignments
 """
 
-from flask import jsonify, session
-from flask_login import current_user
+from flask import jsonify, request, session
+from flask_login import current_user, login_required
+from functools import wraps
 
 from config import (
     CAMPUS_BOYS,
@@ -318,36 +319,156 @@ def public_context():
 # ================================================================
 # LOGIN-TIME AUTHORIZATION
 # ================================================================
-def authorize_user_context(row, ctx, allow_global=False):
-    """
-    Check that an authenticated account may operate inside ``ctx``.
+# One message for every context refusal (spec §13).  Naming the department or
+# campus an account *does* belong to would turn a failed login into a directory
+# lookup, so the wording is identical whichever check failed.
+CONTEXT_DENIED = "This account is not authorized for the selected department/campus."
 
-    ``row`` is the account row (student / teacher / sub-admin).  Returns
-    ``(True, None)`` or ``(False, message)``.
 
-    * ``allow_global=True`` (sub-admins) lets an account with no department
-      act in any context — used for institution-wide administrators.
-    * A teacher/student whose campus differs from the selected campus is
-      rejected here: this is what stops "Intermediate + Boys" credentials
-      from being used to enter "Intermediate + Girls".
+def campus_ids_of(department_id):
+    """Every campus id belonging to a department (any status)."""
+    if not department_id:
+        return set()
+    return {c["id"] for c in query(
+        "SELECT id FROM campuses WHERE department_id=%s", (department_id,))}
+
+
+def account_in_context(row, ctx):
     """
+    ``True`` only when the account row provably belongs to ``ctx``.
+
+    Fail CLOSED at every step — a missing value is a refusal, never a pass:
+
+    * no ``department_id`` on the row  → refuse.  An account that is not
+      filed under a department cannot be shown to belong to the selected one.
+    * different department             → refuse (BS ↔ Intermediate).
+    * a campus was selected and the row's campus differs, or is missing
+                                      → refuse (Boys ↔ Girls).  The earlier
+      version skipped this check when the row's campus was NULL, which would
+      have let one un-filed Intermediate account sign into both campuses.
+    * no campus in the context (BS)   → the row's campus, if any, must still
+      be one of that department's own campuses, so a mis-filed row cannot
+      ride in on the department match alone.
+    """
+    if not isinstance(row, dict) or not isinstance(ctx, dict):
+        return False
+
     row_dept   = row.get("department_id")
     row_campus = row.get("campus_id")
-
-    if row_dept is None:
-        if allow_global:
-            return True, None
-        return False, ("This account is not linked to any department. "
-                       "Please contact the administrator.")
-
-    if row_dept != ctx.get("department_id"):
-        return False, f"This account does not belong to {ctx.get('department_name')}"
-
+    sel_dept   = ctx.get("department_id")
     sel_campus = ctx.get("campus_id")
-    if sel_campus and row_campus and row_campus != sel_campus:
-        return False, f"This account is not registered on the {ctx.get('campus_name')}"
 
-    return True, None
+    if not row_dept or not sel_dept or row_dept != sel_dept:
+        return False
+
+    if sel_campus:
+        return bool(row_campus) and row_campus == sel_campus
+
+    # Department selected without a campus (BS): a campus on the row is
+    # allowed only if it is one of this department's campuses.
+    if row_campus and row_campus not in campus_ids_of(sel_dept):
+        return False
+    return True
+
+
+def authorize_user_context(row, ctx):
+    """
+    Login-time gate: may this authenticated account operate inside ``ctx``?
+
+    Returns ``(True, None)`` or ``(False, message)``.  This is what stops
+    "Intermediate + Boys" credentials from being used to enter
+    "Intermediate + Girls", and BS credentials from entering Intermediate.
+    """
+    if account_in_context(row, ctx):
+        return True, None
+    return False, CONTEXT_DENIED
+
+
+# ================================================================
+# REQUEST-TIME AUTHORIZATION  (spec §9, §10)
+# ================================================================
+# Endpoints that are reachable without a session, because they are what a
+# visitor needs *before* one exists.  Everything else under /api/ is refused
+# by install_api_guard() unless the session carries a validated context.
+PUBLIC_API_PATHS = frozenset({
+    "/api/login",          # the only way to obtain a session
+    "/api/institutions",   # department/campus tree for the selection screens
+    "/api/logout",         # must stay reachable so a broken session can be cleared
+})
+
+
+def _same_department(ctx, wanted):
+    w = str(wanted).strip().upper()
+    w = _DEPARTMENT_ALIASES.get(w, w)
+    return w in {str(ctx.get("department_code") or "").upper(),
+                 str(_DEPARTMENT_ALIASES.get(str(ctx.get("department") or "").upper(),
+                                             ctx.get("department") or "")).upper()}
+
+
+def require_context(department=None, campus=None, role=None):
+    """
+    The one decorator every context-sensitive endpoint can use (spec §9).
+
+    Composes the three questions a protected route has to ask, in order:
+
+    1. is there a session at all?              → 401 (via ``login_required``)
+    2. does it carry a *validated* context?     → 401, because a session
+       without one cannot be scoped to any data
+    3. is that context the one this endpoint
+       is restricted to, and is the role
+       allowed?                                → 403
+
+    ``department`` accepts either the database code ("INTER") or the logical
+    name ("INTERMEDIATE").  Omit both arguments to mean "any context, as long
+    as it is a real one" — which is what most endpoints want, since the row
+    filtering itself is done by ``ctx_clause()``.
+    """
+    roles = {role} if isinstance(role, str) else (set(role) if role else None)
+
+    def decorator(f):
+        @wraps(f)
+        @login_required
+        def decorated(*args, **kwargs):
+            ctx = get_current_context()
+            if not ctx.get("department_id"):
+                return jsonify({
+                    "error": "Your session has no institution context. Please sign in again.",
+                    "authenticated": False,
+                }), 401
+            if roles and getattr(current_user, "role", None) not in roles:
+                return jsonify({"error": "Not authorized for this action"}), 403
+            if department and not _same_department(ctx, department):
+                return jsonify({"error": CONTEXT_DENIED}), 403
+            if campus and str(ctx.get("campus") or "").upper() != str(campus).strip().upper():
+                return jsonify({"error": CONTEXT_DENIED}), 403
+            return f(*args, **kwargs)
+        return decorated
+    return decorator
+
+
+def install_api_guard(app):
+    """
+    Single choke point in front of every /api/ endpoint (spec §10).
+
+    The per-route decorators stay exactly as they are — this is the belt to
+    their braces: if a new endpoint is ever added without a guard, or a
+    session survives from before the department/campus split, the request is
+    still answered with 401 instead of leaking a department's data.
+    """
+    @app.before_request
+    def _guard_api():                                     # pragma: no cover
+        path = request.path or ""
+        if not path.startswith("/api/") or path in PUBLIC_API_PATHS:
+            return None
+        if not current_user.is_authenticated:
+            return jsonify({"error": "Authentication required",
+                            "authenticated": False}), 401
+        if not get_current_context().get("department_id"):
+            return jsonify({
+                "error": "Your session has no institution context. Please sign in again.",
+                "authenticated": False,
+            }), 401
+        return None
 
 
 # ================================================================
@@ -577,7 +698,9 @@ __all__ = [
     "get_current_context", "has_context", "get_current_department",
     "get_current_campus", "current_department_id", "current_campus_id",
     "context_label", "context_title", "public_context",
-    "authorize_user_context",
+    "authorize_user_context", "account_in_context", "campus_ids_of",
+    "CONTEXT_DENIED", "require_context", "install_api_guard",
+    "PUBLIC_API_PATHS",
     "ctx_clause", "ctx_and", "apply_ctx", "in_context_subquery",
     "context_student_ids", "context_teacher_ids", "write_context",
     "row_context", "in_context", "assert_in_context",

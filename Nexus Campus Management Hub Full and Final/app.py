@@ -10,6 +10,7 @@ see utils/context.py.
 from flask import Flask, render_template
 from config import SECRET_KEY, SESSION_PERMANENT, PERMANENT_SESSION_LIFETIME
 from utils.auth import login_manager
+from utils.context import install_api_guard
 
 from routes.auth         import auth_bp
 from routes.students     import students_bp
@@ -30,12 +31,35 @@ def create_app():
     app.config["PERMANENT_SESSION_LIFETIME"] = PERMANENT_SESSION_LIFETIME
     app.config["MAX_CONTENT_LENGTH"]         = 10 * 1024 * 1024   # 10 MB
 
+    # Session cookie hardening.  The session is where the validated
+    # department/campus lives, so it must not be readable by scripts or
+    # sent along with a cross-site request.
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+
     login_manager.init_app(app)
 
     for bp in [auth_bp, students_bp, teachers_bp, attendance_bp,
                academics_bp, fees_bp, assignments_bp, admin_bp, classes_bp,
                institutions_bp]:
         app.register_blueprint(bp)
+
+    # Refuse every /api/ request that has no authenticated session with a
+    # validated institution context, before it reaches a route.  The
+    # per-route decorators stay in place; this is the single choke point
+    # that makes a forgotten decorator harmless (spec §10).
+    install_api_guard(app)
+
+    @app.after_request
+    def _security_headers(resp):
+        # Cheap, dependency-free hardening for the responses this app serves.
+        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+        resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+        resp.headers.setdefault("Referrer-Policy", "same-origin")
+        if resp.mimetype == "application/json":
+            # Never let a browser or proxy keep a copy of institution data.
+            resp.headers.setdefault("Cache-Control", "no-store")
+        return resp
 
     @app.route("/")
     def index():

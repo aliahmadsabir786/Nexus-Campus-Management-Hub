@@ -9,6 +9,19 @@ Every login carries an institution context (department + optional campus).
 The context the browser sends is only a CLAIM: it is validated against the
 `departments` / `campuses` tables, then checked against the account's own
 department/campus before the session is created.  See utils/context.py.
+
+The order of checks in api_login() is deliberate and is the whole security
+model of the login screen:
+
+    identify → verify password hash → verify account status
+             → verify role         → verify department → verify campus
+             → create session
+
+Nothing short-circuits it.  A request that merely *says* role="teacher" or
+department="BS" proves nothing; the answer always comes from the database row
+that the supplied password actually unlocks.  If any step fails no session is
+created, no user object is returned, and the message is the same generic one,
+so a failed login cannot be used to discover which usernames exist.
 """
 
 from flask import Blueprint, request, jsonify, session
@@ -18,18 +31,82 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from db import query
 from utils.auth import User, parse_permissions
 from utils.context import (
-    authorize_user_context,
-    context_id_prefix,
+    CONTEXT_DENIED,
+    account_in_context,
     public_context,
     resolve_context,
 )
 
 auth_bp = Blueprint("auth", __name__)
 
+# Spec §13 — one message for "no such account" and for "wrong password".
+INVALID_CREDENTIALS = "Invalid username or password"
+ACCOUNT_DISABLED    = "This account has been disabled. Please contact the administrator."
+
 
 # ================================================================
 # HELPERS
 # ================================================================
+def _fail(message, status=401):
+    """Every failed login leaves through here: no session, no user object."""
+    return jsonify({"success": False, "error": message}), status
+
+
+def _verify(row, password):
+    """
+    Password check for one candidate row.
+
+    Werkzeug's check_password_hash is the project's existing mechanism and the
+    only thing that ever inspects a stored secret — there is no plaintext
+    comparison anywhere.  A row with no stored hash can never be unlocked
+    (rather than raising), and an unparsable hash simply fails.
+    """
+    stored = (row or {}).get("password_hash")
+    if not stored or not str(stored).strip():
+        return False
+    try:
+        return check_password_hash(str(stored), password)
+    except Exception:
+        return False
+
+
+def _authenticate(candidates, password, ctx):
+    """
+    Pick the row that the supplied password really unlocks — preferring one
+    that also belongs to ``ctx``.
+
+    ``candidates`` may hold more than one row when an identifier is only
+    unique *within* a department (sub-admin usernames, see migration 002).
+    Checking every candidate instead of the first one is what stops the
+    "accidentally authenticate the first matching record" failure in spec §5:
+    the account that gets in is always the one belonging to the selected
+    institution, never whichever row the database happened to return first.
+
+    Returns ``(row, None)`` on success, or ``(None, error_message)``.
+    """
+    unlocked = None
+    for row in candidates:
+        if not _verify(row, password):
+            continue
+        if account_in_context(row, ctx):
+            unlocked = row          # exact context match — stop looking
+            break
+        unlocked = unlocked or row  # remember, but keep looking for a match
+
+    if unlocked is None:
+        return None, INVALID_CREDENTIALS
+
+    # Status is checked only after the password is known to be correct, so
+    # "disabled" can never be used to probe for accounts.
+    if str(unlocked.get("portal", "active")).lower() != "active":
+        return None, ACCOUNT_DISABLED
+
+    if not account_in_context(unlocked, ctx):
+        return None, CONTEXT_DENIED
+
+    return unlocked, None
+
+
 def _finish_login(uid, role, name, ctx, is_sub_admin=False, perms=None):
     """
     Create the Flask-Login session for a successfully authenticated and
@@ -38,7 +115,12 @@ def _finish_login(uid, role, name, ctx, is_sub_admin=False, perms=None):
     subsequent request (spec §13).
     """
     perms = perms or []
-    user  = User(uid, role, name, is_sub_admin, perms, context=ctx)
+
+    # Start from an empty session so nothing from a previous (or forged)
+    # session can survive into this one.  The password is never stored.
+    session.clear()
+
+    user = User(uid, role, name, is_sub_admin, perms, context=ctx)
     login_user(user, remember=True)
 
     session["user_info"] = {
@@ -59,77 +141,53 @@ def _finish_login(uid, role, name, ctx, is_sub_admin=False, perms=None):
     })
 
 
-def _credential_hint(role, ctx):
-    """Sample-credential hint for a failed login, adapted to the context."""
-    if role == "teacher":
-        prefix = context_id_prefix("teachers", ctx)
-        pwd    = "teach1" if prefix == "T" else "teach123"
-        return f"Invalid ID or password. Try {prefix}001 / {pwd}"
-    if role == "student":
-        prefix = context_id_prefix("students", ctx)
-        return f"Invalid ID or password. Try {prefix}001 / 1234"
-    return "Invalid credentials"
-
-
 @auth_bp.route("/api/login", methods=["POST"])
 def api_login():
-    data     = request.get_json() or {}
-    role     = data.get("role", "").strip()
-    username = data.get("username", "").strip()
-    password = data.get("password", "").strip()
+    data     = request.get_json(silent=True) or {}
+    role     = str(data.get("role") or "").strip().lower()
+    username = str(data.get("username") or "").strip()
+    password = str(data.get("password") or "")
 
-    if not all([role, username, password]):
-        return jsonify({"success": False, "error": "All fields required"}), 400
+    if not role or not username or not password.strip():
+        return _fail("All fields required", 400)
+    if role not in {"admin", "teacher", "student"}:
+        # The role decides which table is searched — nothing more.  An
+        # unknown one is a malformed request, not a hint about anything.
+        return _fail("Invalid role", 400)
 
-    # ── Validate the CLAIMED institution context server-side ─────
+    # ── STEP 1: validate the CLAIMED institution context server-side ──
+    # A browser can send any department/campus it likes; only what the
+    # database recognises (and is active) becomes a context.
     ctx, ctx_err = resolve_context(data.get("department"), data.get("campus"))
     if ctx_err:
         return jsonify({"success": False, "error": ctx_err, "contextError": True}), 400
 
-    # ── ADMIN ────────────────────────────────────────────────────
+    # ── STEP 2-6: identify → password → status → role → dept → campus ──
     if role == "admin":
+        # The principal is a single institution-wide account: it administers
+        # every department, one context at a time, and owns no context row of
+        # its own.  Every *other* admin is a sub-admin scoped to one
+        # institution and goes through the same checks as a teacher.
         if username == "admin":
             cfg = query("SELECT password_hash FROM admin_config LIMIT 1", one=True)
-            if cfg and check_password_hash(cfg["password_hash"], password):
-                # The principal/super-admin is institution-wide and may work
-                # inside any active context — one context at a time.
+            if _verify(cfg, password):
                 return _finish_login("admin", "admin", "Admin / Principal", ctx)
+            return _fail(INVALID_CREDENTIALS)
 
-        # Sub-admin check — scoped to their own department/campus
-        sa = query("SELECT * FROM sub_admins WHERE username=%s AND portal='active'",
-                   (username,), one=True)
-        if sa and check_password_hash(sa["password_hash"], password):
-            allowed, why = authorize_user_context(sa, ctx, allow_global=True)
-            if not allowed:
-                return jsonify({"success": False, "error": why}), 403
-            perms = parse_permissions(sa["permissions"])
-            return _finish_login(sa["id"], "admin", sa["name"], ctx,
-                                 is_sub_admin=True, perms=perms)
+        rows = query("SELECT * FROM sub_admins WHERE username=%s", (username,))
+        sa, err = _authenticate(rows, password, ctx)
+        if err:
+            return _fail(err, 403 if err in (CONTEXT_DENIED, ACCOUNT_DISABLED) else 401)
+        return _finish_login(sa["id"], "admin", sa["name"], ctx,
+                             is_sub_admin=True,
+                             perms=parse_permissions(sa["permissions"]))
 
-        return jsonify({"success": False, "error": "Invalid credentials"}), 401
-
-    # ── TEACHER ──────────────────────────────────────────────────
-    if role == "teacher":
-        t = query("SELECT * FROM teachers WHERE id=%s AND portal='active'", (username,), one=True)
-        if t and check_password_hash(t["password_hash"], password):
-            # A teacher of Intermediate/Boys cannot sign into Intermediate/Girls
-            allowed, why = authorize_user_context(t, ctx)
-            if not allowed:
-                return jsonify({"success": False, "error": why}), 403
-            return _finish_login(t["id"], "teacher", t["name"], ctx)
-        return jsonify({"success": False, "error": _credential_hint("teacher", ctx)}), 401
-
-    # ── STUDENT ──────────────────────────────────────────────────
-    if role == "student":
-        s = query("SELECT * FROM students WHERE id=%s AND portal='active'", (username,), one=True)
-        if s and check_password_hash(s["password_hash"], password):
-            allowed, why = authorize_user_context(s, ctx)
-            if not allowed:
-                return jsonify({"success": False, "error": why}), 403
-            return _finish_login(s["id"], "student", s["name"], ctx)
-        return jsonify({"success": False, "error": _credential_hint("student", ctx)}), 401
-
-    return jsonify({"success": False, "error": "Invalid role"}), 400
+    table = "teachers" if role == "teacher" else "students"
+    rows  = query(f"SELECT * FROM {table} WHERE id=%s", (username,))
+    row, err = _authenticate(rows, password, ctx)
+    if err:
+        return _fail(err, 403 if err in (CONTEXT_DENIED, ACCOUNT_DISABLED) else 401)
+    return _finish_login(row["id"], role, row["name"], ctx)
 
 
 @auth_bp.route("/api/logout", methods=["POST"])

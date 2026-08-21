@@ -194,18 +194,39 @@ function renderAdminSettings(){
   </div>`;
 }
 
-function changeAdminPassword(){
+/*
+ * Admin password change — Settings page.
+ * Delegates to POST /api/settings/admin-password (routes/admin.py), which
+ * verifies the current password against the stored hash in admin_config and
+ * writes a new one.  The previous version only reassigned a JavaScript
+ * variable, so the "updated" message was not true after a reload.
+ */
+async function changeAdminPassword(){
   const cur=document.getElementById("s-curpwd")?.value||"";
   const n=document.getElementById("s-newpwd")?.value||"";
   const c=document.getElementById("s-confpwd")?.value||"";
   const msg=document.getElementById("admin-pwd-msg");
   if(!cur||!n||!c){msg.innerHTML=`<span style="color:${T.red}">Please fill all fields.</span>`;return;}
-  if(cur!==adminPassword){msg.innerHTML=`<span style="color:${T.red}">Current password is incorrect.</span>`;return;}
   if(n.length<6){msg.innerHTML=`<span style="color:${T.red}">New password must be at least 6 characters.</span>`;return;}
   if(n!==c){msg.innerHTML=`<span style="color:${T.red}">New passwords do not match.</span>`;return;}
-  adminPassword=n;
-  msg.innerHTML=`<span style="color:${T.green};font-weight:700">✅ Password updated successfully!</span>`;
-  document.getElementById("s-curpwd").value="";document.getElementById("s-newpwd").value="";document.getElementById("s-confpwd").value="";
+
+  msg.innerHTML=`<span style="color:${T.muted}">Updating…</span>`;
+  try{
+    const res=await fetch("/api/settings/admin-password",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({currentPassword:cur,newPassword:n,confirmPassword:c}),
+    });
+    const data=await res.json();
+    if(!res.ok||!data.success){
+      msg.innerHTML=`<span style="color:${T.red}">${esc(data.error||"Could not update password.")}</span>`;
+      return;
+    }
+    msg.innerHTML=`<span style="color:${T.green};font-weight:700">✅ Password updated successfully!</span>`;
+    document.getElementById("s-curpwd").value="";document.getElementById("s-newpwd").value="";document.getElementById("s-confpwd").value="";
+  }catch(e){
+    msg.innerHTML=`<span style="color:${T.red}">Server error. Please try again.</span>`;
+  }
 }
 
 // ─── STUDENTS ───

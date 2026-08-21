@@ -399,35 +399,11 @@ function openModal(type){
 }
 
 // ─── PASSWORD CHANGE HANDLER ───
-function submitChangePassword(){
-  const cur=document.getElementById("cp-cur")?.value||"";
-  const n=document.getElementById("cp-new")?.value||"";
-  const c=document.getElementById("cp-conf")?.value||"";
-  const msg=document.getElementById("cp-msg");
-  if(!cur||!n||!c){msg.innerHTML=`<span style="color:${T.red}">Please fill all fields.</span>`;return;}
-  if(n.length<4){msg.innerHTML=`<span style="color:${T.red}">New password must be at least 4 characters.</span>`;return;}
-  if(n!==c){msg.innerHTML=`<span style="color:${T.red}">New passwords do not match.</span>`;return;}
-
-  const role=currentUser.role;
-  if(role==="admin"&&!currentUser.isSubAdmin){
-    if(cur!==adminPassword){msg.innerHTML=`<span style="color:${T.red}">Current password is incorrect.</span>`;return;}
-    adminPassword=n;
-  } else if(role==="admin"&&currentUser.isSubAdmin){
-    const sa=subAdmins.find(x=>x.id===currentUser.id);
-    if(!sa||cur!==sa.password){msg.innerHTML=`<span style="color:${T.red}">Current password is incorrect.</span>`;return;}
-    sa.password=n;
-  } else if(role==="teacher"){
-    const t=teachers.find(x=>x.id===currentUser.id);
-    if(!t||cur!==t.password){msg.innerHTML=`<span style="color:${T.red}">Current password is incorrect.</span>`;return;}
-    t.password=n;
-  } else if(role==="student"){
-    const s=students.find(x=>x.id===currentUser.id);
-    if(!s||cur!==s.password){msg.innerHTML=`<span style="color:${T.red}">Current password is incorrect.</span>`;return;}
-    s.password=n;
-  }
-  msg.innerHTML=`<span style="color:${T.green};font-weight:700">✅ Password updated successfully! Use your new password next login.</span>`;
-  setTimeout(()=>closeModal(),1800);
-}
+// Owned by api.js (submitChangePassword -> POST /api/change-password), which
+// loads last and is the version that actually runs.  The client-side copy that
+// used to live here compared the typed password against a plaintext `password`
+// field on the loaded records; those fields are gone now that accounts are
+// DB-backed with hashed passwords, so only the server can verify.
 
 // ─── SUB-ADMIN PERMISSION TOGGLE ───
 function togglePermCheck(key,el){

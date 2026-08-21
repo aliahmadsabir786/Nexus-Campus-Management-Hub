@@ -384,15 +384,18 @@ async function switchContext(deptCode, campusCode) {
 }
 
 /**
- * Sidebar entry point.  For a department with more than one campus the
- * switch goes through /api/context/switch (which validates the target and
- * destroys the session); otherwise it simply signs out back to the
- * Department Selection screen.  Either way a fresh login is required.
+ * Sidebar entry point.  A one-click switch is only offered where it is
+ * meaningful: a department that really runs on separate campuses, with
+ * exactly one other campus to move to.  (BS reports a single implicit
+ * "Main BS Campus", which is not a choice a user should be offered.)
+ * Anything else signs out to the Department Selection screen, where the
+ * context is picked again.  Either way a fresh login is required, and the
+ * switch itself is validated by /api/context/switch on the server.
  */
 async function promptSwitchContext() {
   if (!_institutions) await loadInstitutions();
   const d      = findDepartment(appContext.departmentCode);
-  const others = ((d && d.campuses) || [])
+  const others = ((d && d.requiresCampus && d.campuses) || [])
                    .filter(c => String(c.code).toUpperCase() !== String(appContext.campus || '').toUpperCase());
 
   if (others.length === 1) {

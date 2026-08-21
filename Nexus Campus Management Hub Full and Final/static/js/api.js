@@ -233,12 +233,63 @@ function clearContextCaches() {
   reportFilter.class_id = null;
 }
 
+/* ================================================================
+   SHARED SUBMIT PLUMBING  (spec §14, §15, §23)
+   ================================================================
+   Every handler below reports through the one notification system and locks
+   its own button while the request is in flight, so a double click cannot
+   create the same record twice.
+   ================================================================ */
+
+/**
+ * The button that fired the current inline onclick. Read synchronously at the
+ * top of a handler — window.event is stale after the first await.
+ */
+function _submitBtn() {
+  const ev = window.event;
+  let el = ev && (ev.currentTarget || ev.target);
+  if (el && el.tagName !== 'BUTTON' && el.closest) el = el.closest('button');
+  if (!el || el.tagName !== 'BUTTON') {
+    const a = document.activeElement;
+    el = (a && a.tagName === 'BUTTON') ? a : null;
+  }
+  return el;
+}
+
+/** Message for a failed write, without leaking server internals. */
+function _writeFailed(data, fallback) {
+  notify.fromError(data, fallback);
+}
+
+/**
+ * Credentials for a newly created account, shown once in a dialog the admin
+ * can actually read and copy from (a toast would time out mid-sentence).
+ * The server generates these on create; nothing stored is ever echoed back.
+ */
+function _showNewCredentials(kind, id, password) {
+  showModal({
+    title:    kind + ' created',
+    subtitle: 'Hand these over now — the password is not shown again.',
+    tone:     'success',
+    size:     'sm',
+    body:
+      '<div class="nx-cred"><span class="nx-cred__k">Login ID</span>' +
+        '<span class="nx-cred__v">' + esc(id || '—') + '</span></div>' +
+      '<div class="nx-cred"><span class="nx-cred__k">Password</span>' +
+        '<span class="nx-cred__v">' + esc(password || '—') + '</span></div>' +
+      '<div class="nx-modal__note">They can change it from their own profile ' +
+      'after signing in for the first time.</div>',
+    actions: [{ label: 'Done', tone: 'primary' }],
+  });
+}
+
 // ── ADD STUDENT ──
 async function submitAddStudent() {
+  const btn = _submitBtn();
   const name = (document.getElementById('f-name')?.value || '').trim();
-  if (!name) { alert('Please enter student name'); return; }
+  if (!name) { showToast('warning', 'Enter the student name.'); return; }
   const classId = document.getElementById('f-classId')?.value || '';
-  if (!classId) { alert('Please select a class'); return; }
+  if (!classId) { showToast('warning', 'Select a class.'); return; }
   // Resolve class name for the cls field (legacy text field kept for compatibility)
   const classEl = document.getElementById('f-classId');
   const clsName = classEl?.options[classEl.selectedIndex]?.text || classId;
@@ -257,24 +308,25 @@ async function submitAddStudent() {
     dob: document.getElementById('f-dob')?.value || '',
     photo: formData._photoData || null,
   };
-  try {
-    const res = await fetch('/api/students', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-    const data = await res.json();
-    if (data.success) {
-      alert(`✅ Student Added!
-
-ID: ${data.id}
-Password: ${data.plainPassword}`);
+  await withBusy(btn, async () => {
+    try {
+      const res = await fetch('/api/students', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+      const data = await res.json();
+      if (!res.ok || !data.success) { _writeFailed(data, 'Could not add the student.'); return; }
       closeModal();
       await loadAllDataFromDB();
-    } else { alert('Error: ' + (data.error || 'Unknown error')); }
-  } catch(e) { alert('Server error: ' + e.message); }
+      showToast('success', `${name} added to ${clsName}.`);
+      _showNewCredentials('Student', data.id, data.plainPassword);
+    } catch(e) { showToast('error', 'Could not reach the server. Please try again.'); }
+  }, 'Saving…');
 }
 
 // ── EDIT STUDENT ──
 async function submitEditStudent(sid) {
+  const btn = _submitBtn();
   const g = (id) => document.getElementById(id)?.value || formData[id.replace('f-','')] || '';
-  const name = g('f-name').trim(); if (!name) { alert('Name cannot be empty'); return; }
+  const name = g('f-name').trim();
+  if (!name) { showToast('warning', 'Name cannot be empty.'); return; }
   const classIdVal = document.getElementById('f-classId')?.value || '';
   const classEl2 = document.getElementById('f-classId');
   const clsName2 = classEl2?.options[classEl2?.selectedIndex]?.text || '';
@@ -290,32 +342,45 @@ async function submitEditStudent(sid) {
   };
   const pwd = g('f-password').trim(); if (pwd) body.password = pwd;
   if (formData._photoData) body.photo = formData._photoData;
-  try {
-    const res = await fetch(`/api/students/${sid}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-    const data = await res.json();
-    if (data.success) {
+  await withBusy(btn, async () => {
+    try {
+      const res = await fetch(`/api/students/${sid}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+      const data = await res.json();
+      if (!res.ok || !data.success) { _writeFailed(data, 'Could not update the student.'); return; }
       if (currentUser && currentUser.id === sid) currentUser.name = name;
-      alert('✅ Student updated!'); closeModal();
+      closeModal();
       await loadAllDataFromDB();
-    } else { alert('Error: ' + (data.error || 'Unknown')); }
-  } catch(e) { alert('Server error: ' + e.message); }
+      showToast('success', `${name} updated.`);
+    } catch(e) { showToast('error', 'Could not reach the server. Please try again.'); }
+  }, 'Saving…');
 }
 
 // ── DELETE STUDENT ──
 async function delStudent(sid) {
-  if (!confirm('Delete this student?')) return;
+  const s = students.find(x => x.id === sid);
+  if (!await confirmAction({
+    title:   'Delete student',
+    message: `Delete ${s ? s.name : 'this student'}?`,
+    note:    'Attendance, grades and fee records for this student go with them. This cannot be undone.',
+    confirmLabel: 'Delete student',
+  })) return;
   try {
-    await fetch(`/api/students/${sid}`, {method:'DELETE'});
-    students = students.filter(s => s.id !== sid);
+    const res  = await fetch(`/api/students/${sid}`, {method:'DELETE'});
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.success === false) { _writeFailed(data, 'Could not delete the student.'); return; }
+    students = students.filter(x => x.id !== sid);
+    if (modalState === 'viewStudent' || modalState === 'editStudent') closeModal();
     refreshContent();
-  } catch(e) { alert('Error deleting: ' + e.message); }
+    showToast('success', `${s ? s.name : 'Student'} deleted.`);
+  } catch(e) { showToast('error', 'Could not reach the server. Please try again.'); }
 }
-function confirmDelStudent(sid) { delStudent(sid); if(modalState==='viewStudent'||modalState==='editStudent') closeModal(); }
+function confirmDelStudent(sid) { return delStudent(sid); }
 
 // ── ADD TEACHER ──
 async function submitAddTeacher() {
+  const btn = _submitBtn();
   const name = (document.getElementById('f-name')?.value || '').trim();
-  if (!name) { alert('Please enter teacher name'); return; }
+  if (!name) { showToast('warning', 'Enter the teacher name.'); return; }
   const classId   = document.getElementById('f-teachClassId')?.value   || null;
   const sectionId = document.getElementById('f-teachSectionId')?.value || null;
   const body = {
@@ -329,22 +394,25 @@ async function submitAddTeacher() {
     class_id:   classId   ? parseInt(classId)   : null,
     section_id: sectionId ? parseInt(sectionId) : null,
   };
-  try {
-    const res = await fetch('/api/teachers', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-    const data = await res.json();
-    if (data.success) {
-      alert(`✅ Teacher Added!
-ID: ${data.id}
-Password: ${data.plainPassword}`);
-      closeModal(); await loadAllDataFromDB();
-    } else { alert('Error: ' + (data.error || 'Unknown')); }
-  } catch(e) { alert('Server error: ' + e.message); }
+  await withBusy(btn, async () => {
+    try {
+      const res = await fetch('/api/teachers', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+      const data = await res.json();
+      if (!res.ok || !data.success) { _writeFailed(data, 'Could not add the teacher.'); return; }
+      closeModal();
+      await loadAllDataFromDB();
+      showToast('success', `${name} added to the staff list.`);
+      _showNewCredentials('Teacher', data.id, data.plainPassword);
+    } catch(e) { showToast('error', 'Could not reach the server. Please try again.'); }
+  }, 'Saving…');
 }
 
 // ── EDIT TEACHER ──
 async function submitEditTeacher(tid) {
+  const btn = _submitBtn();
   const g = (id) => document.getElementById(id)?.value || formData[id.replace('f-','')] || '';
-  const name = g('f-name').trim(); if (!name) { alert('Name cannot be empty'); return; }
+  const name = g('f-name').trim();
+  if (!name) { showToast('warning', 'Name cannot be empty.'); return; }
   const classId   = document.getElementById('f-teachClassId')?.value   || null;
   const sectionId = document.getElementById('f-teachSectionId')?.value || null;
   const body = {
@@ -355,23 +423,36 @@ async function submitEditTeacher(tid) {
   };
   const pwd = g('f-password').trim(); if (pwd) body.password = pwd;
   if (formData._photoData) body.photo = formData._photoData;
-  try {
-    const res = await fetch(`/api/teachers/${tid}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-    const data = await res.json();
-    if (data.success) {
+  await withBusy(btn, async () => {
+    try {
+      const res = await fetch(`/api/teachers/${tid}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+      const data = await res.json();
+      if (!res.ok || !data.success) { _writeFailed(data, 'Could not update the teacher.'); return; }
       if (currentUser && currentUser.id === tid) currentUser.name = name;
-      alert('✅ Teacher updated!'); closeModal(); await loadAllDataFromDB();
-    } else { alert('Error: ' + (data.error || 'Unknown')); }
-  } catch(e) { alert('Server error: ' + e.message); }
+      closeModal();
+      await loadAllDataFromDB();
+      showToast('success', `${name} updated.`);
+    } catch(e) { showToast('error', 'Could not reach the server. Please try again.'); }
+  }, 'Saving…');
 }
 
 // ── DELETE TEACHER ──
 async function delTeacher(tid) {
-  if (!confirm('Remove this teacher?')) return;
+  const t = teachers.find(x => x.id === tid);
+  if (!await confirmAction({
+    title:   'Remove teacher',
+    message: `Remove ${t ? t.name : 'this teacher'} from the staff list?`,
+    note:    'Their classes are left without an assigned teacher. This cannot be undone.',
+    confirmLabel: 'Remove teacher',
+  })) return;
   try {
-    await fetch(`/api/teachers/${tid}`, {method:'DELETE'});
-    teachers = teachers.filter(t => t.id !== tid); refreshContent();
-  } catch(e) { alert('Error: ' + e.message); }
+    const res  = await fetch(`/api/teachers/${tid}`, {method:'DELETE'});
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.success === false) { _writeFailed(data, 'Could not remove the teacher.'); return; }
+    teachers = teachers.filter(x => x.id !== tid);
+    refreshContent();
+    showToast('success', `${t ? t.name : 'Teacher'} removed.`);
+  } catch(e) { showToast('error', 'Could not reach the server. Please try again.'); }
 }
 
 // ── MARK ATTENDANCE ──

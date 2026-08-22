@@ -581,6 +581,53 @@ _CTX_SOURCE_SQL = {
         "SELECT s.department_id, s.campus_id FROM complaints cm "
         "JOIN students s ON s.id = cm.student_id WHERE cm.id=%s"
     ),
+
+    # ---- BS academic architecture (migration 003) ----------------------
+    # Aggregate-root tables own department_id/campus_id and are read direct.
+    "bs_programs":          "SELECT department_id, campus_id FROM bs_programs WHERE id=%s",
+    "bs_academic_sessions": "SELECT department_id, campus_id FROM bs_academic_sessions WHERE id=%s",
+    "bs_courses":           "SELECT department_id, campus_id FROM bs_courses WHERE id=%s",
+    "bs_curriculums":       "SELECT department_id, campus_id FROM bs_curriculums WHERE id=%s",
+    "bs_batches":           "SELECT department_id, campus_id FROM bs_batches WHERE id=%s",
+    "bs_course_offerings":  "SELECT department_id, campus_id FROM bs_course_offerings WHERE id=%s",
+    # Child tables inherit context through their owner via a foreign key,
+    # so the columns are never duplicated (spec §33).
+    "bs_curriculum_courses": (
+        "SELECT cu.department_id, cu.campus_id FROM bs_curriculum_courses cc "
+        "JOIN bs_curriculums cu ON cu.id = cc.curriculum_id WHERE cc.id=%s"
+    ),
+    "bs_elective_groups": (
+        "SELECT cu.department_id, cu.campus_id FROM bs_elective_groups eg "
+        "JOIN bs_curriculums cu ON cu.id = eg.curriculum_id WHERE eg.id=%s"
+    ),
+    "bs_offering_sections": (
+        "SELECT o.department_id, o.campus_id FROM bs_offering_sections os "
+        "JOIN bs_course_offerings o ON o.id = os.offering_id WHERE os.id=%s"
+    ),
+    "bs_teaching_assignments": (
+        "SELECT o.department_id, o.campus_id FROM bs_teaching_assignments ta "
+        "JOIN bs_offering_sections os ON os.id = ta.offering_section_id "
+        "JOIN bs_course_offerings o ON o.id = os.offering_id WHERE ta.id=%s"
+    ),
+    "bs_enrollments": (
+        "SELECT o.department_id, o.campus_id FROM bs_enrollments en "
+        "JOIN bs_offering_sections os ON os.id = en.offering_section_id "
+        "JOIN bs_course_offerings o ON o.id = os.offering_id WHERE en.id=%s"
+    ),
+    "bs_course_attempts": (
+        "SELECT c.department_id, c.campus_id FROM bs_course_attempts at "
+        "JOIN bs_courses c ON c.id = at.course_id WHERE at.id=%s"
+    ),
+    "bs_timetable_slots": (
+        "SELECT o.department_id, o.campus_id FROM bs_timetable_slots ts "
+        "JOIN bs_offering_sections os ON os.id = ts.offering_section_id "
+        "JOIN bs_course_offerings o ON o.id = os.offering_id WHERE ts.id=%s"
+    ),
+    "bs_attendance": (
+        "SELECT o.department_id, o.campus_id FROM bs_attendance a "
+        "JOIN bs_offering_sections os ON os.id = a.offering_section_id "
+        "JOIN bs_course_offerings o ON o.id = os.offering_id WHERE a.id=%s"
+    ),
 }
 
 

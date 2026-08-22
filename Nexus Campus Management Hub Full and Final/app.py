@@ -23,6 +23,11 @@ from routes.admin        import admin_bp
 from routes.classes      import classes_bp
 from routes.institutions import institutions_bp
 
+# BS Department academic architecture — curriculum (the plan) and offerings
+# (the delivery).  BS-only: every route inside is gated on department "BS".
+from routes.bs_curriculum import bs_curriculum_bp
+from routes.bs_offerings  import bs_offerings_bp
+
 
 def create_app():
     app = Flask(__name__)
@@ -41,7 +46,7 @@ def create_app():
 
     for bp in [auth_bp, students_bp, teachers_bp, attendance_bp,
                academics_bp, fees_bp, assignments_bp, admin_bp, classes_bp,
-               institutions_bp]:
+               institutions_bp, bs_curriculum_bp, bs_offerings_bp]:
         app.register_blueprint(bp)
 
     # Refuse every /api/ request that has no authenticated session with a
@@ -76,6 +81,7 @@ if __name__ == "__main__":
     from utils.migrate import run_migrations
     from utils.seed import seed_sample_passwords
     from utils.seed_institutions import seed_institution_samples
+    from utils.seed_bs_academic import seed_bs_academic
 
     # 5000 stays the default; PORT lets a second instance run alongside it
     # (handy when one copy is already serving on 5000).
@@ -103,5 +109,13 @@ if __name__ == "__main__":
         seed_institution_samples()
     except Exception as e:
         print(f"[warn] Institution seed skipped: {e}")
+
+    # BS academic architecture: link existing BS students to the new program /
+    # batch / curriculum model and lay down the demonstration session.
+    # Idempotent and additive — it never rewrites data it did not create.
+    try:
+        seed_bs_academic()
+    except Exception as e:
+        print(f"[warn] BS academic seed skipped: {e}")
 
     app.run(debug=True, port=port)

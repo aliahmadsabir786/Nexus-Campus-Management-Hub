@@ -10,10 +10,7 @@
    this file does not gate on department itself — shell.js only shows
    the nav entry when appContext.departmentCode === 'BS'.
 
-   Self-contained, same shape as academic_module.js:
-     - one root div (#bsa-root) repainted locally, not the whole app
-     - a local fetch helper + local popup, so a keystroke here never
-       triggers a full-page render()
+ 
    ================================================================ */
 
 /* ─── Module State ──────────────────────────────────────────────── */

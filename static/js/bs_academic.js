@@ -10,7 +10,10 @@
    this file does not gate on department itself — shell.js only shows
    the nav entry when appContext.departmentCode === 'BS'.
 
- 
+   Self-contained, same shape as academic_module.js:
+     - one root div (#bsa-root) repainted locally, not the whole app
+     - a local fetch helper + local popup, so a keystroke here never
+       triggers a full-page render()
    ================================================================ */
 
 /* ─── Module State ──────────────────────────────────────────────── */
@@ -23,6 +26,7 @@ let bsaView     = {             // drill-down state for the Curriculums and Sess
 };
 let bsaProgressStudentId = '';
 let bsaProgressData      = null;
+let bsaCourseProgramFilter = '';   // '' = all programs
 
 /* ─── API helper ─────────────────────────────────────────────────── */
 async function bsaFetch(url, opts = {}) {
@@ -44,7 +48,10 @@ async function bsaLoad(tab) {
   try {
     if (tab === 'overview')    bsaCache.overview    = await bsaFetch('/api/bs/overview');
     if (tab === 'programs')    bsaCache.programs     = await bsaFetch('/api/bs/programs');
-    if (tab === 'courses')     bsaCache.courses      = await bsaFetch('/api/bs/courses');
+    if (tab === 'courses') {
+      bsaCache.programs = bsaCache.programs || await bsaFetch('/api/bs/programs');
+      bsaCache.courses  = await bsaFetch(`/api/bs/courses${bsaCourseProgramFilter ? '?program_id=' + bsaCourseProgramFilter : ''}`);
+    }
     if (tab === 'curriculums') {
       bsaCache.programs = bsaCache.programs || await bsaFetch('/api/bs/programs');
       bsaCache.curriculums = await bsaFetch('/api/bs/curriculums');
@@ -321,20 +328,31 @@ async function bsaDeleteProgram(id) {
    ================================================================ */
 function _bsaCourses() {
   const rows = bsaCache.courses || [];
+  const programs = bsaCache.programs || [];
   return card(`
-    ${secTitle('Course Catalogue', pbtn('+ Add Course', 'bsaOpenAddCourse()', 'sm'))}
-    <div style="font-size:12px;color:${T.muted};margin:-8px 0 14px">
-      A course is reusable and never tied to a semester — place it in a curriculum for its recommended semester, or in a session for its actual offering.
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+      <h2 style="font-family:'Space Grotesk',sans-serif;font-size:16px;font-weight:800;color:${T.text};margin:0">Course Catalogue</h2>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select onchange="bsaFilterCoursesByProgram(this.value)" style="padding:7px 10px;border:1.5px solid ${T.border2};border-radius:8px;font-size:12px;background:${T.surface};color:${T.text}">
+          <option value="" ${!bsaCourseProgramFilter ? 'selected' : ''}>All Programs</option>
+          ${programs.map(p => `<option value="${p.id}" ${String(bsaCourseProgramFilter) === String(p.id) ? 'selected' : ''}>${esc(p.name)} (${esc(p.code)})</option>`).join('')}
+        </select>
+        ${pbtn('+ Add Course', 'bsaOpenAddCourse()', 'sm')}
+      </div>
     </div>
-    ${!rows.length ? `<div style="text-align:center;padding:30px;color:${T.muted}">No courses yet.</div>` : `
+    <div style="font-size:12px;color:${T.muted};margin:-4px 0 14px">
+      Every program has its own independent course catalogue — a course belongs to exactly one program and is never shared across programs.
+    </div>
+    ${!rows.length ? `<div style="text-align:center;padding:30px;color:${T.muted}">No courses yet${bsaCourseProgramFilter ? ' for this program' : ''}.</div>` : `
     <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
       <thead><tr style="text-align:left;color:${T.muted};font-size:11px;text-transform:uppercase">
-        <th style="padding:8px">Code</th><th style="padding:8px">Name</th><th style="padding:8px">Credit Hrs</th>
+        <th style="padding:8px">Program</th><th style="padding:8px">Code</th><th style="padding:8px">Name</th><th style="padding:8px">Credit Hrs</th>
         <th style="padding:8px">Type</th><th style="padding:8px">In Curriculums</th><th style="padding:8px">Offerings</th>
         <th style="padding:8px">Status</th><th style="padding:8px"></th>
       </tr></thead>
       <tbody>
         ${rows.map(c => `<tr style="border-top:1px solid ${T.border}">
+          <td style="padding:8px;color:${T.muted};font-size:12px">${esc(c.programCode)}</td>
           <td style="padding:8px;font-weight:700">${esc(c.code)}</td>
           <td style="padding:8px">${esc(c.name)}</td>
           <td style="padding:8px">${c.creditHours}</td>
@@ -351,13 +369,22 @@ function _bsaCourses() {
     </table></div>`}
   `);
 }
+function bsaFilterCoursesByProgram(val) {
+  bsaCourseProgramFilter = val;
+  bsaLoad('courses');
+}
 function bsaOpenAddCourse() {
+  const programs = bsaCache.programs || [];
+  if (!programs.length) { bsaToast('Add a program first — every course belongs to one.', 'warning'); return; }
   bsaShowPopup(bsaPopupHeader('📘 Add Course') + `
-    <div style="display:grid;gap:12px;grid-template-columns:1fr 1fr">
-      ${bsaField('Course Code *', 'bsa-c-code', '', 'text', 'CS-101')}
-      ${bsaField('Course Name *', 'bsa-c-name', '', 'text', 'Programming Fundamentals')}
-      ${bsaField('Credit Hours', 'bsa-c-credits', '3', 'number')}
-      ${bsaSelect('Type', 'bsa-c-type', [{ value: 'theory', label: 'Theory' }, { value: 'lab', label: 'Lab' }])}
+    <div style="display:grid;gap:12px">
+      ${bsaSelect('Program *', 'bsa-c-program', programs.map(p => ({ value: p.id, label: `${p.name} (${p.code})` })), bsaCourseProgramFilter)}
+      <div style="display:grid;gap:12px;grid-template-columns:1fr 1fr">
+        ${bsaField('Course Code *', 'bsa-c-code', '', 'text', 'CS-101')}
+        ${bsaField('Course Name *', 'bsa-c-name', '', 'text', 'Programming Fundamentals')}
+        ${bsaField('Credit Hours', 'bsa-c-credits', '3', 'number')}
+        ${bsaSelect('Type', 'bsa-c-type', [{ value: 'theory', label: 'Theory' }, { value: 'lab', label: 'Lab' }])}
+      </div>
     </div>
     <div style="margin-top:12px">${bsaTextArea('Description', 'bsa-c-desc', '', 'Optional')}</div>
     ${bsaFormErr()}
@@ -369,6 +396,7 @@ async function bsaSubmitAddCourse() {
   try {
     await bsaFetch('/api/bs/courses', {
       method: 'POST', body: JSON.stringify({
+        programId: parseInt(g('bsa-c-program')),
         code: g('bsa-c-code'), name: g('bsa-c-name'),
         creditHours: parseInt(g('bsa-c-credits')) || 3,
         courseType: g('bsa-c-type'), description: g('bsa-c-desc'),
@@ -379,25 +407,33 @@ async function bsaSubmitAddCourse() {
 }
 function bsaOpenEditCourse(id) {
   const c = (bsaCache.courses || []).find(x => x.id === id);
+  const programs = bsaCache.programs || [];
   if (!c) return;
+  const locked = (c.curriculumCount > 0 || c.offeringCount > 0);
   bsaShowPopup(bsaPopupHeader('✏️ Edit Course') + `
-    <div style="display:grid;gap:12px;grid-template-columns:1fr 1fr">
-      ${bsaField('Course Code *', 'bsa-c-code', c.code)}
-      ${bsaField('Course Name *', 'bsa-c-name', c.name)}
-      ${bsaField('Credit Hours', 'bsa-c-credits', c.creditHours, 'number')}
-      ${bsaSelect('Type', 'bsa-c-type', [{ value: 'theory', label: 'Theory' }, { value: 'lab', label: 'Lab' }], c.courseType)}
+    <div style="display:grid;gap:12px">
+      ${bsaSelect('Program *', 'bsa-c-program', programs.map(p => ({ value: p.id, label: `${p.name} (${p.code})` })), c.programId)}
+      ${locked ? `<div style="font-size:11px;color:${T.muted};margin-top:-8px">Program is locked — this course is already placed in a curriculum or offered in a session.</div>` : ''}
+      <div style="display:grid;gap:12px;grid-template-columns:1fr 1fr">
+        ${bsaField('Course Code *', 'bsa-c-code', c.code)}
+        ${bsaField('Course Name *', 'bsa-c-name', c.name)}
+        ${bsaField('Credit Hours', 'bsa-c-credits', c.creditHours, 'number')}
+        ${bsaSelect('Type', 'bsa-c-type', [{ value: 'theory', label: 'Theory' }, { value: 'lab', label: 'Lab' }], c.courseType)}
+      </div>
     </div>
     <div style="margin-top:12px">${bsaTextArea('Description', 'bsa-c-desc', c.description)}</div>
     <div style="margin-top:12px">${bsaSelect('Status', 'bsa-c-status', [{ value: 'active', label: 'Active' }, { value: 'inactive', label: 'Inactive' }], c.status)}</div>
     ${bsaFormErr()}
     <div style="margin-top:16px;text-align:right">${pbtn('Save Changes', `bsaSubmitEditCourse(${id})`)}</div>
   `, 480);
+  if (locked) setTimeout(() => { const el = document.getElementById('bsa-c-program'); if (el) el.disabled = true; }, 0);
 }
 async function bsaSubmitEditCourse(id) {
   const g = i => document.getElementById(i)?.value || '';
   try {
     await bsaFetch(`/api/bs/courses/${id}`, {
       method: 'PUT', body: JSON.stringify({
+        programId: parseInt(g('bsa-c-program')) || undefined,
         code: g('bsa-c-code'), name: g('bsa-c-name'),
         creditHours: parseInt(g('bsa-c-credits')) || 3,
         courseType: g('bsa-c-type'), description: g('bsa-c-desc'), status: g('bsa-c-status'),
@@ -549,11 +585,13 @@ function _bsaCurriculumDetail() {
 }
 
 function bsaOpenAddCurriculumCourse() {
-  const courses = bsaCache.courses || [];
+  const cur = bsaCache.curriculumDetail?.curriculum;
   bsaShowPopup(bsaPopupHeader('📘 Place Course in Curriculum') + `
-    <div style="font-size:12px;color:${T.muted};margin-bottom:12px">This sets the RECOMMENDED semester only — the course itself stays reusable and untouched.</div>
-    <div style="display:grid;gap:12px">
-      ${courses.length ? bsaSelect('Course *', 'bsa-cc-course', courses.map(c => ({ value: c.id, label: `${c.code} — ${c.name}` }))) : `<div style="color:${T.red};font-size:13px">No courses yet — add one in the Courses tab first.</div>`}
+    <div style="font-size:12px;color:${T.muted};margin-bottom:12px">This sets the RECOMMENDED semester only — the course itself stays reusable and untouched. Only ${esc(cur?.programName || 'this program')}'s own courses can be placed here.</div>
+    <div id="bsa-cc-course-wrap" style="display:grid;gap:12px">
+      <div style="font-size:13px;color:${T.muted}">Loading ${esc(cur?.programName || '')} courses…</div>
+    </div>
+    <div style="display:grid;gap:12px;margin-top:12px">
       ${bsaField('Recommended Semester *', 'bsa-cc-sem', '1', 'number')}
       ${bsaSelect('Classification', 'bsa-cc-class', [
         { value: 'core', label: 'Core' }, { value: 'elective', label: 'Elective' },
@@ -565,6 +603,15 @@ function bsaOpenAddCurriculumCourse() {
     ${bsaFormErr()}
     <div style="margin-top:16px;text-align:right">${pbtn('Add to Curriculum', 'bsaSubmitAddCurriculumCourse()')}</div>
   `, 460);
+  if (cur?.programId) {
+    bsaFetch(`/api/bs/courses?program_id=${cur.programId}`).then(courses => {
+      const wrap = document.getElementById('bsa-cc-course-wrap');
+      if (!wrap) return;
+      wrap.innerHTML = courses.length
+        ? bsaSelect('Course *', 'bsa-cc-course', courses.map(c => ({ value: c.id, label: `${c.code} — ${c.name}` })))
+        : `<div style="color:${T.red};font-size:13px">No courses in ${esc(cur.programName)}'s catalogue yet — add one in the Courses tab first.</div>`;
+    }).catch(e => bsaToast(e.message, 'error'));
+  }
 }
 async function bsaSubmitAddCurriculumCourse() {
   const g = i => document.getElementById(i)?.value || '';

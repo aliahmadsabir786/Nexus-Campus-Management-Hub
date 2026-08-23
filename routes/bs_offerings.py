@@ -234,6 +234,16 @@ def api_bs_add_offering():
 
     program_id    = parse_int(data.get("programId"))
     curriculum_id = parse_int(data.get("curriculumId"))
+    course_program_id = query("SELECT program_id FROM bs_courses WHERE id=%s",
+                              (course_id,), one=True)["program_id"]
+
+    if program_id and program_id != course_program_id:
+        return json_error(
+            "That program doesn't match the course's own program — each program has "
+            "its own independent course catalogue, so a course can only be offered "
+            "under the program it belongs to.", 400)
+    program_id = program_id or course_program_id
+
     if program_id:
         guard = assert_in_context("bs_programs", program_id, "Program")
         if guard:
@@ -244,9 +254,8 @@ def api_bs_add_offering():
             return guard
         cur = query("SELECT program_id FROM bs_curriculums WHERE id=%s",
                     (curriculum_id,), one=True)
-        if program_id and cur["program_id"] != program_id:
+        if cur["program_id"] != program_id:
             return json_error("That curriculum belongs to a different program", 400)
-        program_id = program_id or cur["program_id"]
 
     status = clean(data.get("status")) or "planned"
     if status not in ("planned", "open", "ongoing", "completed", "cancelled"):

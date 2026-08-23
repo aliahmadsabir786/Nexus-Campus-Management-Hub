@@ -180,19 +180,24 @@ def api_bs_delete_program(pid):
 @bs_curriculum_bp.route("/api/bs/courses", methods=["GET"])
 @bs_read
 def api_bs_courses():
-    search  = clean(request.args.get("search"))
-    status  = clean(request.args.get("status"))
-    ctype   = clean(request.args.get("type"))
+    search   = clean(request.args.get("search"))
+    status   = clean(request.args.get("status"))
+    ctype    = clean(request.args.get("type"))
+    program_id = parse_int(request.args.get("program_id"))
     clause, params = ctx_clause("c")
 
     sql  = f"""
-        SELECT c.*,
+        SELECT c.*, p.name AS program_name, p.code AS program_code,
                (SELECT COUNT(*) FROM bs_curriculum_courses cc WHERE cc.course_id = c.id) AS curriculum_count,
                (SELECT COUNT(*) FROM bs_course_offerings   o WHERE o.course_id  = c.id) AS offering_count
         FROM   bs_courses c
+        JOIN   bs_programs p ON p.id = c.program_id
         WHERE  {clause}
     """
     args = list(params)
+    if program_id:
+        sql += " AND c.program_id=%s"
+        args.append(program_id)
     if search:
         sql += " AND (LOWER(c.name) LIKE %s OR LOWER(c.code) LIKE %s)"
         args += [f"%{search.lower()}%", f"%{search.lower()}%"]
@@ -202,7 +207,7 @@ def api_bs_courses():
     if ctype:
         sql += " AND c.course_type=%s"
         args.append(ctype)
-    sql += " ORDER BY c.code"
+    sql += " ORDER BY p.name, c.code"
 
     out = []
     for r in query(sql, args):
@@ -235,6 +240,11 @@ def api_bs_add_course():
     if not name:
         return json_error("Course name is required")
 
+    program_id = parse_int(data.get("programId"))
+    if not program_id:
+        return json_error("Program is required — every course belongs to exactly one "
+                           "program's catalogue.")
+
     ch = parse_int(data.get("creditHours"), 3)
     if ch is None or ch < 0 or ch > 12:
         return json_error("Credit hours must be between 0 and 12")
@@ -247,20 +257,26 @@ def api_bs_add_course():
     if err:
         return err
 
-    clause, params = ctx_clause()
-    if query(f"SELECT id FROM bs_courses WHERE code=%s AND {clause}",
-             [code] + params, one=True):
-        return json_error(f"Course {code} already exists", 409)
+    guard = assert_in_context("bs_programs", program_id, "Program")
+    if guard:
+        return guard
+
+    if query("SELECT id FROM bs_courses WHERE code=%s AND program_id=%s",
+             (code, program_id), one=True):
+        return json_error(f"Course {code} already exists in this program's catalogue", 409)
 
     try:
         new_id = query("""
             INSERT INTO bs_courses
                 (code, name, credit_hours, course_type, description, status,
-                 department_id, campus_id)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                 department_id, campus_id, program_id)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """, (code, name, ch, ctype, clean(data.get("description")),
-              clean(data.get("status")) or "active", dept_id, campus_id), commit=True)
-        row = query("SELECT * FROM bs_courses WHERE id=%s", (new_id,), one=True)
+              clean(data.get("status")) or "active", dept_id, campus_id, program_id), commit=True)
+        row = query("""
+            SELECT c.*, p.name AS program_name, p.code AS program_code
+            FROM bs_courses c JOIN bs_programs p ON p.id=c.program_id WHERE c.id=%s
+        """, (new_id,), one=True)
         return jsonify({"success": True, "course": safe_course(row)}), 201
     except Exception as e:
         return json_error(f"Failed to create course: {e}", 500)
@@ -280,14 +296,40 @@ def api_bs_update_course(cid):
                 "A course cannot be moved to a semester. Change its recommended "
                 "semester in the curriculum, or its actual semester on the offering.", 400)
 
+    # Moving a course to a different program is only safe while it is not
+    # yet in use anywhere — once it is placed in a curriculum or offered,
+    # re-parenting it would silently drag someone else's curriculum/session
+    # data across into the new program.
+    if "programId" in data and data.get("programId") not in (None, ""):
+        new_program_id = parse_int(data.get("programId"))
+        row = query("SELECT program_id FROM bs_courses WHERE id=%s", (cid,), one=True)
+        if row and new_program_id and new_program_id != row["program_id"]:
+            in_use = query("""
+                SELECT
+                    (SELECT COUNT(*) FROM bs_curriculum_courses WHERE course_id=%s) AS cc,
+                    (SELECT COUNT(*) FROM bs_course_offerings   WHERE course_id=%s) AS off
+            """, (cid, cid), one=True)
+            if in_use["cc"] or in_use["off"]:
+                return json_error(
+                    "This course is already placed in a curriculum or offered in a "
+                    "session, so it can't be moved to a different program. Create a "
+                    "new course under the other program instead.", 409)
+            guard = assert_in_context("bs_programs", new_program_id, "Program")
+            if guard:
+                return guard
+
     sets, args = [], []
     for key, col in [("code", "code"), ("name", "name"), ("creditHours", "credit_hours"),
                      ("courseType", "course_type"), ("description", "description"),
-                     ("status", "status")]:
+                     ("status", "status"), ("programId", "program_id")]:
         if key in data:
             val = data[key]
             if key == "code":
                 val = clean(val, upper=True)
+            elif key == "programId":
+                val = parse_int(val)
+                if not val:
+                    continue
             elif isinstance(val, str):
                 val = val.strip()
             sets.append(f"{col}=%s")
@@ -299,7 +341,10 @@ def api_bs_update_course(cid):
             query(f"UPDATE bs_courses SET {','.join(sets)} WHERE id=%s", args, commit=True)
         except Exception as e:
             return json_error(f"Failed to update course: {e}", 500)
-    row = query("SELECT * FROM bs_courses WHERE id=%s", (cid,), one=True)
+    row = query("""
+        SELECT c.*, p.name AS program_name, p.code AS program_code
+        FROM bs_courses c JOIN bs_programs p ON p.id=c.program_id WHERE c.id=%s
+    """, (cid,), one=True)
     return jsonify({"success": True, "course": safe_course(row)})
 
 
@@ -712,6 +757,14 @@ def api_bs_add_curriculum_course(cuid):
     guard = assert_in_context("bs_courses", course_id, "Course")
     if guard:
         return guard
+
+    curriculum = query("SELECT program_id FROM bs_curriculums WHERE id=%s", (cuid,), one=True)
+    course     = query("SELECT program_id, code FROM bs_courses WHERE id=%s", (course_id,), one=True)
+    if curriculum and course and curriculum["program_id"] != course["program_id"]:
+        return json_error(
+            f"Course {course['code']} belongs to a different program's catalogue than "
+            "this curriculum. Each program has its own independent course catalogue — "
+            "pick a course from this curriculum's program, or add a new course there.", 400)
 
     if query("SELECT id FROM bs_curriculum_courses WHERE curriculum_id=%s AND course_id=%s",
              (cuid, course_id), one=True):

@@ -113,21 +113,25 @@ def _ensure_session(dept_id, campus_id, spec):
     """, (name, term, year, start, end, status, dept_id, campus_id), commit=True), True
 
 
-def _ensure_course(dept_id, campus_id, code, name, ch, ctype):
+def _ensure_course(dept_id, campus_id, program_id, code, name, ch, ctype):
     """
     A course carries NO semester — that is the whole point of the design
     (spec Rule 1).  The semester lives on the curriculum entry and on the
     offering, never here.
+
+    A course DOES belong to exactly one program (migration 004) — the
+    catalogue is deliberately not shared across programs, so a course code
+    only has to be unique WITHIN a program.
     """
-    row = query("SELECT id FROM bs_courses WHERE code=%s AND department_id=%s",
-                (code, dept_id), one=True)
+    row = query("SELECT id FROM bs_courses WHERE code=%s AND program_id=%s",
+                (code, program_id), one=True)
     if row:
         return row["id"], False
     return query("""
         INSERT INTO bs_courses
-            (code, name, credit_hours, course_type, status, department_id, campus_id)
-        VALUES (%s,%s,%s,%s,'active',%s,%s)
-    """, (code, name, ch, ctype, dept_id, campus_id), commit=True), True
+            (code, name, credit_hours, course_type, status, department_id, campus_id, program_id)
+        VALUES (%s,%s,%s,%s,'active',%s,%s,%s)
+    """, (code, name, ch, ctype, dept_id, campus_id, program_id), commit=True), True
 
 
 def _ensure_curriculum(dept_id, campus_id, program_id):
@@ -341,14 +345,14 @@ def seed_bs_academic():
     # ---- 2. Courses and the curriculum that recommends them --------------
     course_ids = {}
     for code, name, ch, ctype, sem, classification in _COURSES:
-        cid, new = _ensure_course(dept_id, campus_id, code, name, ch, ctype)
+        cid, new = _ensure_course(dept_id, campus_id, program_id, code, name, ch, ctype)
         course_ids[code] = cid
         if new:
             created.append(f"{code} {name}")
         _ensure_curriculum_course(curriculum_id, cid, sem, classification, ch)
 
     for code, name, ch, ctype, sem, classification, group in _ELECTIVES:
-        cid, new = _ensure_course(dept_id, campus_id, code, name, ch, ctype)
+        cid, new = _ensure_course(dept_id, campus_id, program_id, code, name, ch, ctype)
         course_ids[code] = cid
         if new:
             created.append(f"{code} {name}")

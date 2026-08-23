@@ -168,6 +168,9 @@ def safe_session(r):
 def safe_course(r):
     return {
         "id":          r["id"],
+        "programId":   r.get("program_id"),
+        "programName": r.get("program_name"),
+        "programCode": r.get("program_code"),
         "code":        r["code"],
         "name":        r["name"],
         "creditHours": r.get("credit_hours") or 0,

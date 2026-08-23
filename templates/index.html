@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<!--
+  ================================================================
+  NEXus Solution — College Management System
+  index.html  |  Entry-point — loads all JS modules in order
+  ================================================================
+-->
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <!-- Responsive viewport.
+       maximum-scale / user-scalable were removed on purpose: blocking pinch
+       zoom fails WCAG 1.4.4 (spec §45). Horizontal scroll is prevented by
+       fixing the overflowing components instead — see ui.css section 6. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#064e3b" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+
+  <title>NEXus Solution — College Management System</title>
+
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎓</text></svg>" />
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&family=Space+Grotesk:wght@600;700;800&display=swap" rel="stylesheet" />
+
+  <!-- Main Stylesheet -->
+  <link rel="stylesheet" href="/static/css/styles.css" />
+  <!-- Institution context: department/campus screens + dark-mode corrections.
+       Must load AFTER styles.css so its dark-mode rules win the cascade. -->
+  <link rel="stylesheet" href="/static/css/context.css" />
+  <!-- Shared UI system: toasts, modals, loading states, dark-mode
+       corrections, responsive/overflow fixes. Loads LAST so it can correct
+       the older hard-coded rules above without editing every one of them. -->
+  <link rel="stylesheet" href="/static/css/ui.css" />
+
+  <!-- Inline critical styles (prevent FOUC) -->
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0; padding: 0;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background: #064e3b;
+      overflow: hidden;
+    }
+    /* var(--bg) so the root canvas follows light/dark mode */
+    #app { width:100%; height:100vh; overflow:hidden; background:var(--bg); }
+  </style>
+</head>
+
+<body>
+
+  <!-- Loading Screen -->
+  <div id="loading-screen" aria-hidden="true">
+    <div class="loading-logo">🎓</div>
+    <div class="loading-title">NEXus Solution</div>
+    <div class="loading-subtitle">College Management System · 2025–26</div>
+    <div class="loading-dots">
+      <div class="loading-dot"></div>
+      <div class="loading-dot"></div>
+      <div class="loading-dot"></div>
+    </div>
+  </div>
+
+  <!-- App Root -->
+  <div id="app" role="main"></div>
+
+  <!-- ============================================================
+       JavaScript Modules — loaded in dependency order
+
+       Load order:
+         1. theme.js         — design tokens + UI helpers (T, esc, card…)
+         2. notifications.js — showToast() / notify.* (needs esc from theme)
+         3. data.js          — seed data + constants (students, teachers…)
+         4. state.js         — reactive state + render engine
+         5. context.js       — department/campus selection + context labels
+         6. charts.js        — responsive canvas charts
+         7. login.js         — login page + auth
+         8. shell.js         — app shell (sidebar, header, nav)
+         9. classes.js / academic_module.js — class & section management
+        10. admin.js         — all admin pages
+        11. teacher.js       — all teacher pages
+        12. student.js       — all student pages
+        13. modals.js        — all modal dialogs
+        14. downloads.js     — PDF/Excel/print helpers
+        15. api.js           — backend API bridge + DOMContentLoaded
+        16. modal.js         — LAST on purpose: showModal/confirmAction wrap
+                              the openModal/closeModal defined above, so the
+                              existing call sites gain focus management, ESC
+                              and a targeted repaint without being rewritten.
+  ============================================================ -->
+  <script src="/static/js/theme.js"></script>
+  <script src="/static/js/notifications.js"></script>
+  <script src="/static/js/data.js"></script>
+  <script src="/static/js/state.js"></script>
+  <script src="/static/js/context.js"></script>
+  <script src="/static/js/charts.js"></script>
+  <script src="/static/js/login.js"></script>
+  <script src="/static/js/shell.js"></script>
+  <script src="/static/js/classes.js"></script>
+  <script src="/static/js/academic_module.js"></script>
+  <script src="/static/js/bs_academic.js"></script>
+  <script src="/static/js/admin.js"></script>
+  <script src="/static/js/teacher.js"></script>
+  <script src="/static/js/student.js"></script>
+  <script src="/static/js/modals.js"></script>
+  <script src="/static/js/downloads.js"></script>
+  <script src="/static/js/api.js"></script>
+  <script src="/static/js/modal.js"></script>
+
+  <!-- Dismiss loading screen after app initialises -->
+  <script>
+    requestAnimationFrame(function() {
+      setTimeout(function() {
+        var s = document.getElementById('loading-screen');
+        if(s){ s.classList.add('hidden'); setTimeout(function(){ if(s.parentNode) s.parentNode.removeChild(s); }, 450); }
+      }, 350);
+    });
+  </script>
+
+</body>
+</html>

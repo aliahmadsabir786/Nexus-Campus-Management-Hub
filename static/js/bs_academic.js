@@ -1505,6 +1505,108 @@ async function bsaSubmitPromotion() {
 
 
 /* ================================================================
+   TEACHER — QUICK ATTENDANCE / GRADES  (reachable from the main nav
+   "Attendance" / "Grades" tabs, not just via "My BS Teaching")
+   ================================================================
+   Same underlying data as "My BS Teaching" (bsaMyTeaching), but the ask was
+   simpler: teacher picks a Program then a Semester, sees the matching
+   course section(s) they're assigned to, and marks straight away — instead
+   of drilling through the course list first. Reuses _bsaSecAttendance /
+   _bsaSecResults so the actual marking grid is identical either way.
+*/
+let bsaQuickFilter  = { mode: 'attendance', programId: '', semester: '' };
+let bsaQuickSection = null;
+
+function renderBSTeacherQuick(mode) {
+  bsaQuickFilter.mode = mode;
+  if (!bsaMyTeaching && !bsaLoading) {
+    bsaLoading = true;
+    bsaFetch('/api/bs/my/teaching').then(rows => { bsaMyTeaching = rows; bsaLoading = false; _bsaQuickRender(); })
+      .catch(e => { bsaToast(e.message, 'error'); bsaLoading = false; _bsaQuickRender(); });
+  }
+  return `<div id="bsa-quick-root">${_bsaQuickBody()}</div>`;
+}
+function _bsaQuickRender() { const el = document.getElementById('bsa-quick-root'); if (el) el.innerHTML = _bsaQuickBody(); }
+
+function _bsaQuickBody() {
+  if (bsaLoading || !bsaMyTeaching) return card(`<div style="text-align:center;padding:40px;color:${T.muted}">Loading…</div>`);
+  if (bsaQuickSection) return _bsaQuickSectionView();
+
+  const rows = bsaMyTeaching;
+  const label = bsaQuickFilter.mode === 'results' ? 'Results' : 'Attendance';
+  if (!rows.length) return card(`<div style="text-align:center;padding:30px;color:${T.muted}">No BS teaching assignments yet — nothing to mark.</div>`);
+
+  const programs = [...new Map(rows.filter(r => r.programId).map(r => [r.programId, r.programName])).entries()];
+  const semesters = bsaQuickFilter.programId
+    ? [...new Set(rows.filter(r => String(r.programId) === String(bsaQuickFilter.programId)).map(r => r.actualSemester))].sort((a, b) => a - b)
+    : [];
+  const matches = (bsaQuickFilter.programId && bsaQuickFilter.semester)
+    ? rows.filter(r => String(r.programId) === String(bsaQuickFilter.programId) && String(r.actualSemester) === String(bsaQuickFilter.semester))
+    : [];
+
+  const progSelect = bsaSelect('Program', 'bsa-q-program',
+    [{ value: '', label: '-- Select Program --' }, ...programs.map(([id, name]) => ({ value: id, label: name }))],
+    bsaQuickFilter.programId).replace('<select ', '<select onchange="bsaQuickProgramChanged()" ');
+  const semSelect = bsaSelect('Semester', 'bsa-q-semester',
+    [{ value: '', label: '-- Select Semester --' }, ...semesters.map(s => ({ value: s, label: 'Semester ' + s }))],
+    bsaQuickFilter.semester).replace('<select ', '<select onchange="bsaQuickSemesterChanged()" ');
+
+  return `
+  ${card(`
+    ${secTitle(`Mark ${label} — BS`)}
+    <div style="display:flex;gap:14px;flex-wrap:wrap">
+      <div style="min-width:220px">${progSelect}</div>
+      <div style="min-width:180px">${semSelect}</div>
+    </div>
+  `)}
+  <div style="margin-top:14px">
+    ${!bsaQuickFilter.programId || !bsaQuickFilter.semester
+      ? card(`<div style="text-align:center;padding:20px;color:${T.muted}">Select a program and semester to see your assigned course(s).</div>`)
+      : !matches.length
+      ? card(`<div style="text-align:center;padding:20px;color:${T.muted}">You aren't assigned to teach any course in this program/semester.</div>`)
+      : card(`
+        ${secTitle('Your course(s) in this semester')}
+        <div style="display:grid;gap:8px">${matches.map(r => `
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;padding:10px 12px;background:${T.bg2};border-radius:8px">
+            <div><b>${esc(r.courseCode)}</b> — ${esc(r.courseName)} <span style="color:${T.muted}">· Section ${esc(r.sectionName)} · ${r.enrolledCount} student(s)</span></div>
+            ${pbtn(`Mark ${label}`, `bsaOpenQuickSection(${r.offeringSectionId})`, 'sm')}
+          </div>`).join('')}</div>
+      `)}
+  </div>`;
+}
+function bsaQuickProgramChanged() {
+  bsaQuickFilter.programId = document.getElementById('bsa-q-program')?.value || '';
+  bsaQuickFilter.semester = '';
+  _bsaQuickRender();
+}
+function bsaQuickSemesterChanged() {
+  bsaQuickFilter.semester = document.getElementById('bsa-q-semester')?.value || '';
+  const matches = bsaMyTeaching.filter(r =>
+    String(r.programId) === String(bsaQuickFilter.programId) && String(r.actualSemester) === String(bsaQuickFilter.semester));
+  if (matches.length === 1) { bsaOpenQuickSection(matches[0].offeringSectionId); return; }
+  _bsaQuickRender();
+}
+function bsaOpenQuickSection(sid) {
+  bsaQuickSection = sid;
+  bsaView.sectionId = sid; bsaView.sectionTab = bsaQuickFilter.mode === 'results' ? 'results' : 'attendance';
+  bsaLoadSectionExtra(sid).then(_bsaQuickRender);
+}
+function bsaBackToQuickList() { bsaQuickSection = null; bsaView.sectionId = null; _bsaQuickRender(); }
+function _bsaQuickSectionView() {
+  const info = bsaMyTeaching.find(r => r.offeringSectionId === bsaQuickSection);
+  const mode = bsaQuickFilter.mode === 'results' ? 'results' : 'attendance';
+  return `
+  <div style="margin-bottom:14px">${obtn('← Back', 'bsaBackToQuickList()', 'sm')}</div>
+  ${card(`
+    <div style="font-family:'Space Grotesk',sans-serif;font-weight:800;font-size:16px;color:${T.text}">${esc(info?.courseCode || '')} — Section ${esc(info?.sectionName || '')}</div>
+    <div style="font-size:12px;color:${T.muted};margin-top:2px">${esc(info?.programName || '')} · ${esc(info?.sessionName || '')} · Semester ${info?.actualSemester || ''}</div>
+  `)}
+  <div style="margin-top:14px">
+    ${mode === 'attendance' ? _bsaSecAttendance(bsaQuickSection) : _bsaSecResults(bsaQuickSection)}
+  </div>`;
+}
+
+/* ================================================================
    TEACHER — MY TEACHING  (spec §31)
    ================================================================ */
 let bsaMyTeaching = null;
@@ -1554,27 +1656,29 @@ function bsaTeachSwitchSubTab(t) { bsaMyTeachingSubTab = t; bsaView.sectionTab =
 
 function _bsaTeachSectionDetail() {
   const info = bsaMyTeaching.find(r => r.offeringSectionId === bsaMyTeachingSectionId);
+  // Attendance & Results moved out to the main "Attendance" / "Grades" nav
+  // tabs (renderBSTeacherQuick) so a teacher doesn't have to drill into a
+  // specific course first — Roster and Sessional marks stay here since
+  // those are naturally course-scoped browsing, not a quick daily task.
   const SUBTABS = [
     { key: 'roster',     label: '🎓 Roster' },
-    { key: 'attendance', label: '📋 Attendance' },
     { key: 'sessional',  label: '🧮 Sessional' },
-    { key: 'results',    label: '📝 Results' },
   ];
+  if (bsaMyTeachingSubTab === 'attendance' || bsaMyTeachingSubTab === 'results') bsaMyTeachingSubTab = 'roster';
   bsaView.sectionTab = bsaMyTeachingSubTab; // keep shared renderers pointed at the right sub-view
   return `
   <div style="margin-bottom:14px">${obtn('← My Teaching', 'bsaBackToMyTeaching()', 'sm')}</div>
   ${card(`
     <div style="font-family:'Space Grotesk',sans-serif;font-weight:800;font-size:16px;color:${T.text}">${esc(info?.courseCode || '')} — Section ${esc(info?.sectionName || '')}</div>
     <div style="font-size:12px;color:${T.muted};margin-top:2px">${esc(info?.sessionName || '')} · Semester ${info?.actualSemester || ''}</div>
+    <div style="background:${T.accentL};color:${T.accentD};border-radius:8px;padding:8px 12px;margin-top:10px;font-size:12px;font-weight:600">💡 Attendance and Results for this course are marked from the main "Attendance" / "Grades" tabs now.</div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:14px">
       ${SUBTABS.map(t => `<button type="button" onclick="bsaTeachSwitchSubTab('${t.key}')" style="padding:7px 14px;border:none;border-radius:8px;background:${bsaMyTeachingSubTab === t.key ? T.accentL : T.bg2};color:${bsaMyTeachingSubTab === t.key ? T.accentD : T.muted};font-weight:${bsaMyTeachingSubTab === t.key ? 800 : 600};font-size:12px;cursor:pointer">${t.label}</button>`).join('')}
     </div>
   `)}
   <div style="margin-top:14px">
     ${bsaMyTeachingSubTab === 'roster'     ? _bsaSecRoster(bsaMyTeachingSectionId).replace(/bsaOpenEnroll|bsaDeleteEnrollment/g, m => m) : ''}
-    ${bsaMyTeachingSubTab === 'attendance' ? _bsaSecAttendance(bsaMyTeachingSectionId) : ''}
     ${bsaMyTeachingSubTab === 'sessional'  ? _bsaSecSessional(bsaMyTeachingSectionId) : ''}
-    ${bsaMyTeachingSubTab === 'results'    ? _bsaSecResults(bsaMyTeachingSectionId)    : ''}
   </div>`;
 }
 

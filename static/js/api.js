@@ -353,26 +353,50 @@ async function submitAddStudent() {
   const btn = _submitBtn();
   const name = (document.getElementById('f-name')?.value || '').trim();
   if (!name) { showToast('warning', 'Enter the student name.'); return; }
-  const classId = document.getElementById('f-classId')?.value || '';
-  if (!classId) { showToast('warning', 'Select a class.'); return; }
-  // Resolve class name for the cls field (legacy text field kept for compatibility)
-  const classEl = document.getElementById('f-classId');
-  const clsName = classEl?.options[classEl.selectedIndex]?.text || classId;
-  const sectionId = document.getElementById('f-sectionId')?.value || null;
+  const isBS = appContext && appContext.departmentCode === "BS";
   const pwd = (document.getElementById('f-password')?.value || '1234').trim();
-  const body = {
-    name, password: pwd,
-    cls: clsName,
-    classId: parseInt(classId) || null,
-    sectionId: sectionId ? (parseInt(sectionId) || null) : null,
-    subjectGroup: document.getElementById('f-subjectGroup')?.value || 'Computer Science',
-    phone: document.getElementById('f-phone')?.value || '',
-    guardianPhone: document.getElementById('f-guardianPhone')?.value || '',
-    email: document.getElementById('f-email')?.value || '',
-    feeStatus: document.getElementById('f-feeStatus')?.value || 'pending',
-    dob: document.getElementById('f-dob')?.value || '',
-    photo: formData._photoData || null,
-  };
+  let body;
+
+  if (isBS) {
+    const programId = document.getElementById('f-bsProgramId')?.value || '';
+    const batchId   = document.getElementById('f-bsBatchId')?.value || '';
+    const semester  = document.getElementById('f-bsSemester')?.value || '1';
+    if (!programId) { showToast('warning', 'Select a program.'); return; }
+    if (!batchId)   { showToast('warning', 'Select a session.'); return; }
+    body = {
+      name, password: pwd,
+      bsProgramId: parseInt(programId) || null,
+      bsBatchId: parseInt(batchId) || null,
+      bsSemester: parseInt(semester) || 1,
+      phone: document.getElementById('f-phone')?.value || '',
+      guardianPhone: document.getElementById('f-guardianPhone')?.value || '',
+      email: document.getElementById('f-email')?.value || '',
+      feeStatus: document.getElementById('f-feeStatus')?.value || 'pending',
+      dob: document.getElementById('f-dob')?.value || '',
+      photo: formData._photoData || null,
+    };
+  } else {
+    const classId = document.getElementById('f-classId')?.value || '';
+    if (!classId) { showToast('warning', 'Select a class.'); return; }
+    // Resolve class name for the cls field (legacy text field kept for compatibility)
+    const classEl = document.getElementById('f-classId');
+    const clsName = classEl?.options[classEl.selectedIndex]?.text || classId;
+    const sectionId = document.getElementById('f-sectionId')?.value || null;
+    body = {
+      name, password: pwd,
+      cls: clsName,
+      classId: parseInt(classId) || null,
+      sectionId: sectionId ? (parseInt(sectionId) || null) : null,
+      subjectGroup: document.getElementById('f-subjectGroup')?.value || 'Computer Science',
+      phone: document.getElementById('f-phone')?.value || '',
+      guardianPhone: document.getElementById('f-guardianPhone')?.value || '',
+      email: document.getElementById('f-email')?.value || '',
+      feeStatus: document.getElementById('f-feeStatus')?.value || 'pending',
+      dob: document.getElementById('f-dob')?.value || '',
+      photo: formData._photoData || null,
+    };
+  }
+
   await withBusy(btn, async () => {
     try {
       const res = await fetch('/api/students', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
@@ -380,7 +404,7 @@ async function submitAddStudent() {
       if (!res.ok || !data.success) { _writeFailed(data, 'Could not add the student.'); return; }
       closeModal();
       await loadAllDataFromDB();
-      showToast('success', `${name} added to ${clsName}.`);
+      showToast('success', `${name} added.`);
       _showNewCredentials('Student', data.id, data.plainPassword);
     } catch(e) { showToast('error', 'Could not reach the server. Please try again.'); }
   }, 'Saving…');
@@ -1060,6 +1084,83 @@ function initStudentClassDropdown(selectedClassId, selectedSectionId) {
   }, 0);
 }
 
+// ── BS STUDENT FORM — Program / Session(Batch) / Semester dropdowns ─────────
+// BS has no Class/Section (that's Intermediate-only); a BS admission needs a
+// Program, then a Session (really a Batch — a batch already ties program +
+// admission session + curriculum together), then a Semester. Reuses the same
+// /api/bs/programs and /api/bs/batches endpoints the BS admin module already
+// calls, so no new backend route is needed here either.
+let _cachedBSPrograms = null;
+let _cachedBSBatches  = null;
+
+function initBSStudentDropdowns(selectedProgramId, selectedBatchId) {
+  setTimeout(async () => {
+    await loadBSProgramsDropdown('f-bsProgramId', selectedProgramId);
+    if (selectedProgramId) {
+      await loadBSBatchesDropdown('f-bsBatchId', selectedProgramId, selectedBatchId);
+    }
+  }, 0);
+}
+
+async function loadBSProgramsDropdown(selectId, selectedProgramId) {
+  try {
+    if (!_cachedBSPrograms) {
+      const res = await fetch('/api/bs/programs');
+      _cachedBSPrograms = res.ok ? await res.json() : [];
+    }
+    const el = document.getElementById(selectId);
+    if (!el) return;
+    if (!_cachedBSPrograms.length) {
+      el.innerHTML = '<option value="">-- No programs configured yet --</option>';
+      return;
+    }
+    el.innerHTML = '<option value="">-- Select Program --</option>' +
+      _cachedBSPrograms.map(p =>
+        `<option value="${p.id}" ${String(p.id) === String(selectedProgramId) ? 'selected' : ''}>${esc ? esc(p.name) : p.name}</option>`
+      ).join('');
+  } catch (e) { console.error('Failed to load BS programs dropdown:', e); }
+}
+
+async function loadBSBatchesDropdown(selectId, programId, selectedBatchId) {
+  try {
+    if (!_cachedBSBatches) {
+      const res = await fetch('/api/bs/batches');
+      _cachedBSBatches = res.ok ? await res.json() : [];
+    }
+    const batches = _cachedBSBatches.filter(b => String(b.programId) === String(programId));
+    const el = document.getElementById(selectId);
+    if (!el) return;
+    if (!batches.length) {
+      el.innerHTML = '<option value="">-- No sessions for this program yet --</option>';
+      return;
+    }
+    el.innerHTML = '<option value="">-- Select Session --</option>' +
+      batches.map(b =>
+        `<option value="${b.id}" data-semester="${b.currentSemester || 1}" ${String(b.id) === String(selectedBatchId) ? 'selected' : ''}>${esc ? esc(b.sessionName || b.name) : (b.sessionName || b.name)}</option>`
+      ).join('');
+  } catch (e) { console.error('Failed to load BS batches dropdown:', e); }
+}
+
+/** Called when the Program dropdown changes in the Add/Edit Student modal. */
+async function onBSStudentProgramChange(programId) {
+  setForm('bsProgramId', programId);
+  setForm('bsBatchId', '');
+  await loadBSBatchesDropdown('f-bsBatchId', programId, null);
+}
+
+/** Called when the Session (Batch) dropdown changes — defaults Semester to
+    that batch's current semester, since a new admission normally joins
+    wherever the batch currently sits. Admin can still edit it. */
+function onBSStudentBatchChange(batchId) {
+  setForm('bsBatchId', batchId);
+  const el = document.getElementById('f-bsBatchId');
+  const opt = el && el.options[el.selectedIndex];
+  const semester = opt ? (opt.getAttribute('data-semester') || 1) : 1;
+  const semEl = document.getElementById('f-bsSemester');
+  if (semEl) semEl.value = semester;
+  setForm('bsSemester', semester);
+}
+
 // ── TEACHER FORM — Class / Section dropdown helpers ──────────────────────────
 
 /**
@@ -1125,4 +1226,3 @@ async function onTeacherClassChange(classId, sectionSelectId) {
   if (el) el.innerHTML = '<option value="">Loading sections…</option>';
   await loadTeacherSectionsDropdown(sectionSelectId, classId, null);
 }
-

@@ -1748,6 +1748,7 @@ def api_bs_my_teaching():
         SELECT ta.*, t.name AS teacher_name, os.name AS section_name,
                c.code AS course_code, c.name AS course_name, c.credit_hours,
                s.name AS session_name, o.actual_semester, o.status AS offering_status,
+               p.id AS program_id, p.name AS program_name,
                (SELECT COUNT(*) FROM bs_enrollments en
                  WHERE en.offering_section_id=os.id AND en.status='enrolled') AS enrolled_count
         FROM   bs_teaching_assignments ta
@@ -1756,6 +1757,7 @@ def api_bs_my_teaching():
         JOIN   bs_course_offerings  o  ON o.id  = os.offering_id
         JOIN   bs_courses           c  ON c.id  = o.course_id
         JOIN   bs_academic_sessions s  ON s.id  = o.session_id
+        LEFT JOIN bs_programs      p  ON p.id  = o.program_id
         WHERE  ta.teacher_id=%s AND o.status <> 'cancelled'
         ORDER  BY s.start_date DESC, c.code, os.name
     """, (current_user.id,))
@@ -1764,6 +1766,8 @@ def api_bs_my_teaching():
     for r in rows:
         d = safe_teaching_assignment(r)
         d["offeringStatus"] = r["offering_status"]
+        d["programId"]      = r["program_id"]
+        d["programName"]    = r["program_name"] or ""
         d["timetable"] = [safe_slot(s) for s in query(_SLOT_COLS + """
             WHERE ts.offering_section_id=%s
             ORDER BY FIELD(ts.day_of_week,'Mon','Tue','Wed','Thu','Fri','Sat','Sun'), ts.start_time

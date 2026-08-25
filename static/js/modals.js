@@ -80,12 +80,31 @@ function renderModal(){
     <button onclick="${isEdit?`submitEditSubAdmin('${sa?.id}')`:"submitAddSubAdmin()"}" style="width:100%;background:linear-gradient(135deg,${T.purple},#6d28d9);color:#fff;border:none;border-radius:12px;padding:13px;font-size:15px;font-weight:700;cursor:pointer;font-family:'Plus Jakarta Sans',sans-serif">${isEdit?"💾 Save Changes":"👥 Create Sub-Admin"}</button>`;
   }
 
-  if(modalState==="addStudent"){title="➕ Add New Student";content=`
+  if(modalState==="addStudent"){
+    const isBS = appContext && appContext.departmentCode === "BS";
+    title="➕ Add New Student";content=`
     <div style="margin-bottom:18px"><label style="font-size:11px;color:${T.muted};display:block;margin-bottom:8px;font-weight:700;text-transform:uppercase">Profile Photo (Optional)</label>
       <div style="display:flex;align-items:center;gap:14px"><div id="stu-photo-preview" style="width:64px;height:64px;border-radius:50%;overflow:hidden;flex-shrink:0;border:2px solid ${T.border2};background:linear-gradient(135deg,${T.accent},${T.accentD});display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:800;color:#fff">${formData._photoData?`<img src="${formData._photoData}" style="width:100%;height:100%;object-fit:cover"/>`:formData.name?formData.name[0].toUpperCase():"👤"}</div>
       <div style="flex:1"><label style="display:inline-flex;align-items:center;gap:8px;background:${T.bg};border:1.5px solid ${T.border};border-radius:10px;padding:9px 16px;cursor:pointer;font-size:12px;font-weight:700;color:${T.accent}">📷 Choose Photo<input type="file" accept="image/*" style="display:none" onchange="previewStudentPhoto(this)"/></label>
       <div style="font-size:11px;color:${T.muted};margin-top:5px">JPG, PNG · Max 2MB</div></div></div></div>
     ${fld("Full Name","f-name",formData.name||"")}
+    ${isBS ? `
+    <div style="margin-bottom:14px">
+      <label style="font-size:11px;color:${T.muted};display:block;margin-bottom:6px;font-weight:700;text-transform:uppercase;letter-spacing:.06em">Program *</label>
+      <select id="f-bsProgramId" onchange="onBSStudentProgramChange(this.value)"
+        style="width:100%;background:${T.bg};border:1.5px solid ${T.border};border-radius:10px;padding:10px 14px;color:${T.text};font-size:13px;box-sizing:border-box;outline:none;font-family:'Plus Jakarta Sans',sans-serif">
+        <option value="">-- Loading programs… --</option>
+      </select>
+    </div>
+    <div style="margin-bottom:14px">
+      <label style="font-size:11px;color:${T.muted};display:block;margin-bottom:6px;font-weight:700;text-transform:uppercase;letter-spacing:.06em">Session *</label>
+      <select id="f-bsBatchId" onchange="onBSStudentBatchChange(this.value)"
+        style="width:100%;background:${T.bg};border:1.5px solid ${T.border};border-radius:10px;padding:10px 14px;color:${T.text};font-size:13px;box-sizing:border-box;outline:none;font-family:'Plus Jakarta Sans',sans-serif">
+        <option value="">-- Select a program first --</option>
+      </select>
+    </div>
+    ${fld("Semester *","f-bsSemester",formData.bsSemester||1,"number")}
+    ` : `
     <div style="margin-bottom:14px">
       <label style="font-size:11px;color:${T.muted};display:block;margin-bottom:6px;font-weight:700;text-transform:uppercase;letter-spacing:.06em">Class *</label>
       <select id="f-classId" onchange="onStudentClassChange(this.value,'f-sectionId')"
@@ -100,16 +119,7 @@ function renderModal(){
         <option value="">-- Select a class first --</option>
       </select>
     </div>
-    <div style="margin-bottom:14px">
-      <label style="font-size:11px;color:${T.muted};display:block;margin-bottom:6px;font-weight:700;text-transform:uppercase;letter-spacing:.06em">Subject Group</label>
-      <select id="f-subjectGroup" onchange="setForm('f-subjectGroup',this.value);updateSubjectPreview('add-subject-preview',this.value)"
-        style="width:100%;background:${T.bg};border:1.5px solid ${T.border};border-radius:10px;padding:10px 14px;color:${T.text};font-size:13px;box-sizing:border-box;outline:none;font-family:'Plus Jakarta Sans',sans-serif">
-        ${ALL_GROUPS.map(g=>`<option value="${g}" ${(formData.subjectGroup||"Computer Science")===g?"selected":""}>${g}</option>`).join("")}
-      </select>
-      <div id="add-subject-preview" style="background:${T.bg};border:1px solid ${T.border};border-radius:8px;padding:8px 12px;margin-top:6px;font-size:11px;color:${T.muted}">
-        📚 Subjects: <strong style="color:${T.accent}">${(SUBJECT_GROUPS[formData.subjectGroup||"Computer Science"]||[]).join(" · ")}</strong>
-      </div>
-    </div>
+    ` }
     ${fld("Password (for login)","f-password",formData.password||"1234","text",null,"Login password")}${fld("Phone","f-phone",formData.phone||"")}${fld("Guardian Phone","f-guardianPhone",formData.guardianPhone||"")}${fld("Email","f-email",formData.email||"")}${fld("Date of Birth","f-dob",formData.dob||"","date")}${fld("Fee Status","f-feeStatus",formData.feeStatus||"pending","text",["paid","pending","overdue"])}
     <div style="background:${T.accentL};border:1px solid ${T.border2};border-radius:10px;padding:11px 14px;font-size:12px;color:${T.accentD};margin-bottom:16px;font-weight:600">💡 Auto-generated ID + password = student login credentials.</div>
     <button onclick="submitAddStudent()" style="width:100%;background:linear-gradient(135deg,${T.accent},${T.accentD});color:#fff;border:none;border-radius:12px;padding:13px;font-size:15px;font-weight:700;cursor:pointer">Add Student</button>`;}
@@ -390,7 +400,7 @@ function updateSubjectPreview(previewId,group){
 function setForm(id,val){formData[id.replace("f-","")]=val;}
 
 function openModal(type){
-  if(type==="addStudent")formData={name:"",cls:"CS-A",classId:null,sectionId:null,subjectGroup:"Computer Science",phone:"",guardianPhone:"",email:"",feeStatus:"pending",dob:"",password:"1234",_photoData:null};
+  if(type==="addStudent")formData={name:"",cls:"CS-A",classId:null,sectionId:null,subjectGroup:"Computer Science",bsProgramId:"",bsBatchId:"",bsSemester:1,phone:"",guardianPhone:"",email:"",feeStatus:"pending",dob:"",password:"1234",_photoData:null};
   else if(type==="addTeacher")formData={name:"",subject:SUBJECTS[0],dept:"Computer Science",phone:"",email:"",qualification:"",_photoData:null};
   else if(type==="addExam")formData={title:"",subject:SUBJECTS[0],cls:"CS-A",date:"",time:"09:00 AM",duration:"3 hours",room:"",totalMarks:"100"};
   else if(type==="addNotice")formData={title:"",type:"academic",author:"Principal"};
@@ -400,9 +410,10 @@ function openModal(type){
   else if(type==="changePassword")formData={};
   else if(type==="addSubAdmin"){formData={name:"",username:"",password:""};subAdminPermsSelected=[];}
   modalState=type;render();
-  // Init dynamic class/section dropdowns for student forms
+  // Init dynamic class/section (or BS program/session) dropdowns for student forms
   if (type === 'addStudent') {
-    initStudentClassDropdown(null, null);
+    if (appContext && appContext.departmentCode === "BS") initBSStudentDropdowns(null, null);
+    else initStudentClassDropdown(null, null);
   }
 }
 

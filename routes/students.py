@@ -26,6 +26,7 @@ from utils.context import (
     assert_class_in_context,
     assert_section_in_context,
     assert_student_in_context,
+    assert_in_context,
     ctx_and,
     next_context_id,
     write_context,
@@ -122,7 +123,7 @@ def api_add_student():
 
     pwd    = data.get("password", "1234") or "1234"
     new_id = next_context_id("students", "students")
-    cls    = data.get("cls", "CS-A")
+    cls    = data.get("cls") or ("BS" if data.get("bsProgramId") or data.get("bsBatchId") else "CS-A")
 
     # Auto generate roll number based on class — next available number in that
     # class WITHIN this context, so Boys and Girls number independently.
@@ -154,13 +155,43 @@ def api_add_student():
         if guard:
             return guard
 
+    # ---- BS academics: Program -> Session(Batch) -> Semester -------------
+    # BS has no Class/Section at all (that's an Intermediate-only concept),
+    # so a BS admission carries a program + batch + semester instead. The
+    # batch already encodes its own program/curriculum/admission-session,
+    # so selecting it is enough to fill in the rest.
+    bs_program_id    = data.get("bsProgramId") or None
+    bs_batch_id      = data.get("bsBatchId") or None
+    bs_curriculum_id = None
+    bs_semester      = data.get("bsSemester") or None
+    if bs_batch_id:
+        guard = assert_in_context("bs_batches", bs_batch_id, "Batch")
+        if guard:
+            return guard
+        batch = query("SELECT * FROM bs_batches WHERE id=%s", (bs_batch_id,), one=True)
+        if not batch:
+            return jsonify({"error": "Batch not found"}), 404
+        bs_program_id    = bs_program_id or batch["program_id"]
+        bs_curriculum_id = batch["curriculum_id"]
+        if not bs_semester:
+            bs_semester = batch["current_semester"]
+    elif bs_program_id:
+        guard = assert_in_context("bs_programs", bs_program_id, "Program")
+        if guard:
+            return guard
+    try:
+        bs_semester = int(bs_semester) if bs_semester not in (None, "") else None
+    except (TypeError, ValueError):
+        return jsonify({"error": "Semester must be a number"}), 400
+
     try:
         query(
             """INSERT INTO students
                (id,name,cls,subject_group,roll_no,phone,guardian_phone,
                 email,fee_status,dob,password_hash,portal,photo,class_id,section_id,
+                bs_program_id,bs_batch_id,bs_curriculum_id,bs_current_semester,
                 department_id,campus_id)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'active',%s,%s,%s,%s,%s)""",
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'active',%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (new_id, name,
              cls,
              data.get("subjectGroup", "Computer Science"),
@@ -174,6 +205,10 @@ def api_add_student():
              photo,
              class_id,
              section_id,
+             bs_program_id,
+             bs_batch_id,
+             bs_curriculum_id,
+             bs_semester,
              dept_id,
              campus_id),
             commit=True

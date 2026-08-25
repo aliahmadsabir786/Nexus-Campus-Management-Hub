@@ -77,7 +77,7 @@ function getNav(){
       const allNav=[{key:"dashboard",icon:"📊",label:"Dashboard"},...SUB_ADMIN_PERMS.filter(p=>perms.includes(p.key)).map(p=>({key:p.key,icon:p.label.split(" ")[0],label:p.label.replace(/^[^ ]+ /,"")}))]
       return allNav;
     }
-    const base=[{key:"dashboard",icon:"📊",label:"Dashboard"},{key:"academics",icon:"🏫",label:"Academics"}];
+    const base=[{key:"dashboard",icon:"📊",label:"Dashboard"}];
     if(isBS) base.push({key:"bs-academics",icon:"🧭",label:"BS Academics"});
     return [...base,{key:"students",icon:"🎓",label:"Students"},{key:"teachers",icon:"👨‍🏫",label:"Teachers"},{key:"attendance",icon:"📋",label:"Attendance"},{key:"exams",icon:"📝",label:"Exams"},{key:"grades",icon:"📈",label:"Grades"},{key:"fees",icon:"💳",label:"Fees"},{key:"assignments",icon:"📎",label:"Assignments"},{key:"timetable",icon:"🕐",label:"Timetable"},{key:"notices",icon:"📢",label:"Notices"},{key:"complaints",icon:"⚠️",label:"Complaints"},{key:"reports",icon:"📋",label:"Reports"},{key:"portals",icon:"🔐",label:"Portal Access"},{key:"subadmins",icon:"👥",label:"Sub-Admins"},{key:"settings",icon:"⚙️",label:"Settings"}];
   }

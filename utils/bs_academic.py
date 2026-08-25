@@ -333,6 +333,117 @@ def safe_attempt(r):
     }
 
 
+def safe_sessional_component(r):
+    return {
+        "id":          r["id"],
+        "offeringId":  r["offering_id"],
+        "name":        r["name"],
+        "maxMarks":    float(r["max_marks"]),
+        "sortOrder":   r.get("sort_order") or 0,
+        "createdAt":   str(r.get("created_at") or ""),
+    }
+
+
+def promotion_rules_for(program_id):
+    """
+    Configurable promotion-eligibility rules for a program (spec §17).
+    A program with no configured row falls back to sane defaults rather
+    than blocking promotion entirely — university policy is not assumed,
+    but promotion must still be usable out of the box.
+    """
+    row = query("SELECT * FROM bs_promotion_rules WHERE program_id=%s",
+                (program_id,), one=True)
+    if row:
+        return {
+            "minGpa":              float(row["min_gpa"]),
+            "maxFailedSubjects":   int(row["max_failed_subjects"]),
+            "minAttendancePct":    float(row["min_attendance_pct"]),
+            "requireFeeClearance": bool(row["require_fee_clearance"]),
+        }
+    return {
+        "minGpa": 2.00, "maxFailedSubjects": 2,
+        "minAttendancePct": 0.0, "requireFeeClearance": False,
+    }
+
+
+def student_session_report(student_id, session_id):
+    """
+    One student's outcome for ONE academic session — the semester that is
+    about to be completed. Feeds the semester-promotion eligibility check
+    (spec §17): GPA over that session's attempts, failed-subject count,
+    average attendance across that session's sections, and fee status.
+    """
+    attempts = query("""
+        SELECT at.status, at.grade, at.gpa_points, c.credit_hours
+        FROM   bs_course_attempts at
+        JOIN   bs_course_offerings o ON o.id = at.offering_id
+        JOIN   bs_courses c ON c.id = at.course_id
+        WHERE  at.student_id=%s AND o.session_id=%s
+    """, (student_id, session_id))
+
+    points = credits = 0.0
+    failed = 0
+    for a in attempts:
+        ch = int(a.get("credit_hours") or 0)
+        gp = a.get("gpa_points")
+        if gp is None and a.get("grade"):
+            gp = GRADE_POINTS.get(str(a["grade"]).upper())
+        if gp is not None and a["status"] in ("passed", "failed"):
+            points += float(gp) * ch
+            credits += ch
+        if a["status"] == "failed":
+            failed += 1
+    gpa = round(points / credits, 2) if credits else None
+
+    att = query("""
+        SELECT AVG(sub.pct) AS avg_pct FROM (
+            SELECT en.offering_section_id,
+                   SUM(a.status IN ('present','late')) * 100.0 / NULLIF(COUNT(a.id), 0) AS pct
+            FROM   bs_enrollments en
+            JOIN   bs_offering_sections os ON os.id = en.offering_section_id
+            JOIN   bs_course_offerings  o  ON o.id  = os.offering_id
+            LEFT JOIN bs_attendance a ON a.student_id = en.student_id
+                   AND a.offering_section_id = en.offering_section_id
+            WHERE  en.student_id=%s AND o.session_id=%s
+            GROUP  BY en.offering_section_id
+        ) sub
+    """, (student_id, session_id), one=True)
+    attendance_pct = round(float(att["avg_pct"]), 1) if att and att["avg_pct"] is not None else None
+
+    fee_pending = query(
+        "SELECT COUNT(*) AS n FROM fee_vouchers WHERE student_id=%s AND status<>'paid'",
+        (student_id,), one=True)
+    fee_cleared = not bool(fee_pending and fee_pending["n"])
+
+    return {
+        "gpa":            gpa,
+        "failedSubjects": failed,
+        "attendancePct":  attendance_pct,
+        "feeCleared":     fee_cleared,
+        "coursesTaken":   len(attempts),
+    }
+
+
+def promotion_eligibility(report, rules):
+    """
+    ``('eligible' | 'review', [reasons])`` — never a hard block. A student
+    outside the rules is always surfaced for admin review (spec §17), never
+    silently dropped from the list, so the admin can still override.
+    """
+    reasons = []
+    if report["coursesTaken"] == 0:
+        reasons.append("No courses recorded for this session")
+    if report["gpa"] is not None and report["gpa"] < rules["minGpa"]:
+        reasons.append(f"GPA {report['gpa']} below minimum {rules['minGpa']}")
+    if report["failedSubjects"] > rules["maxFailedSubjects"]:
+        reasons.append(f"{report['failedSubjects']} failed subject(s), max is {rules['maxFailedSubjects']}")
+    if rules["minAttendancePct"] and (report["attendancePct"] or 0) < rules["minAttendancePct"]:
+        reasons.append(f"Attendance {report['attendancePct'] or 0}% below minimum {rules['minAttendancePct']}%")
+    if rules["requireFeeClearance"] and not report["feeCleared"]:
+        reasons.append("Fee not cleared")
+    return ("review" if reasons else "eligible"), reasons
+
+
 def safe_slot(r):
     return {
         "id":                r["id"],

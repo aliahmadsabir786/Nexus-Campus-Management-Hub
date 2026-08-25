@@ -4,6 +4,8 @@ Uses PyMySQL (pure Python, no system libs needed).
 Install: pip install pymysql
 """
 
+from contextlib import contextmanager
+
 import pymysql
 import pymysql.cursors
 
@@ -54,3 +56,46 @@ def query(sql, args=None, one=False, commit=False):
         raise
     finally:
         conn.close()
+
+
+@contextmanager
+def transaction():
+    """
+    Multi-statement transaction (spec §31 — promotion must be all-or-nothing).
+
+    `query()` above commits (or rolls back) after every single statement, on
+    its own connection — fine for the vast majority of routes, but wrong for
+    an operation the spec explicitly describes as "BEGIN TRANSACTION ...
+    steps ... COMMIT / if anything fails ROLLBACK". Use like:
+
+        with transaction() as conn:
+            tquery(conn, "UPDATE students SET ... WHERE id=%s", (sid,))
+            tquery(conn, "UPDATE bs_enrollments SET ... WHERE id=%s", (eid,))
+        # commits here only if every statement above ran without raising;
+        # any exception rolls back everything and re-raises.
+    """
+    conn = get_db()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def tquery(conn, sql, args=None, one=False):
+    """
+    Run one statement against a connection opened by `transaction()`.
+
+    Never commits or closes the connection itself — `transaction()` owns
+    the commit/rollback for the whole block, exactly once, at the end.
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, args or ())
+        if one:
+            return cur.fetchone()
+        if cur.description is None:
+            return cur.lastrowid
+        return cur.fetchall()

@@ -1,6 +1,10 @@
 import re, os, sys
 ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "routes")
-GUARDS = ("login_required", "admin_required", "perm_required", "require_context")
+GUARDS = ("login_required", "admin_required", "perm_required", "require_context",
+          # BS blueprints wrap require_context() in these helpers
+          # (utils/bs_academic.py) rather than calling it inline, so the
+          # substring check above never sees it directly at the route.
+          "bs_read", "bs_write", "bs_mark", "bs_teacher_only", "bs_student_only")
 PUBLIC_OK = ("/api/institutions",)
 bad = []
 for fn in sorted(os.listdir(ROOT)):

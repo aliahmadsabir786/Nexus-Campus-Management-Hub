@@ -20,6 +20,7 @@ Two rules are enforced here rather than merely documented:
 Endpoints
 ---------
   GET/POST         /api/bs/programs                     PUT/DELETE /api/bs/programs/<id>
+  GET/PUT          /api/bs/programs/<id>/promotion-rules configurable eligibility (spec §17)
   GET/POST         /api/bs/courses                      PUT/DELETE /api/bs/courses/<id>
   GET/POST         /api/bs/sessions                     PUT/DELETE /api/bs/sessions/<id>
   GET/POST         /api/bs/curriculums                  PUT/DELETE /api/bs/curriculums/<id>
@@ -36,7 +37,8 @@ Endpoints
 
 from flask import Blueprint, jsonify, request
 
-from db import query
+from db import query, transaction, tquery
+from utils.audit import write_audit_log
 from utils.bs_academic import (
     bs_read,
     bs_write,
@@ -44,12 +46,15 @@ from utils.bs_academic import (
     clean,
     json_error,
     parse_int,
+    promotion_eligibility,
+    promotion_rules_for,
     safe_batch,
     safe_course,
     safe_curriculum,
     safe_curriculum_course,
     safe_program,
     safe_session,
+    student_session_report,
 )
 from utils.context import assert_in_context, ctx_clause
 
@@ -171,6 +176,223 @@ def api_bs_delete_program(pid):
 
     query("DELETE FROM bs_programs WHERE id=%s", (pid,), commit=True)
     return jsonify({"success": True})
+
+
+# ================================================================
+# PROMOTION RULES  (spec §17)  —  configurable eligibility, per program
+# ================================================================
+
+@bs_curriculum_bp.route("/api/bs/programs/<int:pid>/promotion-rules", methods=["GET"])
+@bs_read
+def api_bs_get_promotion_rules(pid):
+    guard = assert_in_context("bs_programs", pid, "Program")
+    if guard:
+        return guard
+    row = query("SELECT * FROM bs_promotion_rules WHERE program_id=%s", (pid,), one=True)
+    rules = promotion_rules_for(pid)
+    rules["programId"] = pid
+    rules["configured"] = row is not None
+    return jsonify(rules)
+
+
+@bs_curriculum_bp.route("/api/bs/programs/<int:pid>/promotion-rules", methods=["PUT"])
+@bs_write()
+def api_bs_set_promotion_rules(pid):
+    """University policy is configured here, never hard-coded (spec §17)."""
+    guard = assert_in_context("bs_programs", pid, "Program")
+    if guard:
+        return guard
+    data = request.get_json(force=True, silent=True) or {}
+
+    def _num(key, default):
+        try:
+            return float(data[key]) if key in data else default
+        except (TypeError, ValueError):
+            return default
+
+    min_gpa    = _num("minGpa", 2.00)
+    max_failed = int(_num("maxFailedSubjects", 2))
+    min_att    = _num("minAttendancePct", 0)
+    req_fee    = bool(data.get("requireFeeClearance", False))
+    if min_gpa < 0 or min_gpa > 4:
+        return json_error("minGpa must be between 0 and 4")
+    if max_failed < 0:
+        return json_error("maxFailedSubjects cannot be negative")
+    if min_att < 0 or min_att > 100:
+        return json_error("minAttendancePct must be between 0 and 100")
+
+    query("""
+        INSERT INTO bs_promotion_rules
+            (program_id, min_gpa, max_failed_subjects, min_attendance_pct, require_fee_clearance)
+        VALUES (%s,%s,%s,%s,%s)
+        ON DUPLICATE KEY UPDATE
+            min_gpa=VALUES(min_gpa), max_failed_subjects=VALUES(max_failed_subjects),
+            min_attendance_pct=VALUES(min_attendance_pct),
+            require_fee_clearance=VALUES(require_fee_clearance)
+    """, (pid, min_gpa, max_failed, min_att, req_fee), commit=True)
+
+    rules = promotion_rules_for(pid)
+    rules["programId"] = pid
+    rules["configured"] = True
+    return jsonify(rules)
+
+
+# ================================================================
+# SEMESTER PROMOTION  (spec §15, §16, §17, §31)  —  admin's "Promotion" screen
+# ================================================================
+# Promotion is expressed as an explicit workflow, never a silent
+# `current_semester = current_semester + 1` (spec §15): PREVIEW first shows
+# every candidate's standing and eligibility so the admin can review before
+# committing anything; EXECUTE then promotes only the selected students, one
+# transaction per student (spec §31), so a failure on one never leaves
+# another half-promoted.
+
+def _promotion_candidates(program_id, session_id, semester):
+    """Active students of this program currently sitting in `semester`,
+    scoped to the caller's context — the same student pool the preview and
+    the execute step both draw from, so what the admin approves is exactly
+    what gets promoted."""
+    clause, params = ctx_clause("s")
+    return query(f"""
+        SELECT s.id, s.name, s.roll_no,
+               COALESCE(s.bs_current_semester, b.current_semester) AS current_semester
+        FROM   students s
+        LEFT JOIN bs_batches b ON b.id = s.bs_batch_id
+        WHERE  COALESCE(s.bs_program_id, b.program_id) = %s
+           AND COALESCE(s.bs_current_semester, b.current_semester) = %s
+           AND s.status = 'active'
+           AND {clause}
+        ORDER  BY s.roll_no, s.name
+    """, [program_id, semester] + params)
+
+
+@bs_curriculum_bp.route("/api/bs/promotion/preview", methods=["GET"])
+@bs_read
+def api_bs_promotion_preview():
+    """
+    ?programId=&sessionId=&semester=  ->  every eligible-or-review student.
+
+    Never filters a student OUT for being ineligible (spec §17) — "review"
+    students are returned alongside "eligible" ones so the admin can see
+    and, if appropriate, override them; nothing is silently hidden.
+    """
+    program_id = parse_int(request.args.get("programId"))
+    session_id = parse_int(request.args.get("sessionId"))
+    semester   = parse_int(request.args.get("semester"))
+    if not (program_id and session_id and semester):
+        return json_error("programId, sessionId and semester are all required")
+
+    guard = assert_in_context("bs_programs", program_id, "Program")
+    if guard:
+        return guard
+    guard = assert_in_context("bs_academic_sessions", session_id, "Session")
+    if guard:
+        return guard
+
+    rules = promotion_rules_for(program_id)
+    students = []
+    for s in _promotion_candidates(program_id, session_id, semester):
+        report = student_session_report(s["id"], session_id)
+        status, reasons = promotion_eligibility(report, rules)
+        students.append({
+            "studentId":      s["id"],
+            "studentName":    s["name"],
+            "rollNo":         s["roll_no"] or "",
+            "currentSemester": s["current_semester"],
+            **report,
+            "status":  status,
+            "reasons": reasons,
+        })
+
+    return jsonify({
+        "programId": program_id, "sessionId": session_id, "semester": semester,
+        "targetSemester": semester + 1,
+        "rules": rules,
+        "students": students,
+        "eligibleCount": sum(1 for x in students if x["status"] == "eligible"),
+        "reviewCount":   sum(1 for x in students if x["status"] == "review"),
+    })
+
+
+@bs_curriculum_bp.route("/api/bs/promotion/execute", methods=["POST"])
+@bs_write()
+def api_bs_promotion_execute():
+    """
+    Body: {"programId":, "sessionId":, "semester":, "studentIds": [...]}
+
+    Promotes exactly the students selected — including "review" ones the
+    admin chose to override, since promotion_eligibility() never hard-blocks
+    (spec §17). Each student is promoted in its own transaction (spec §31):
+    verify -> update -> commit, or roll back and move to the next student,
+    so one bad row never leaves a neighbour half-promoted.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    program_id = parse_int(data.get("programId"))
+    session_id = parse_int(data.get("sessionId"))
+    semester   = parse_int(data.get("semester"))
+    student_ids = data.get("studentIds") or []
+    if not (program_id and session_id and semester):
+        return json_error("programId, sessionId and semester are all required")
+    if not isinstance(student_ids, list) or not student_ids:
+        return json_error("No students selected")
+
+    guard = assert_in_context("bs_programs", program_id, "Program")
+    if guard:
+        return guard
+    guard = assert_in_context("bs_academic_sessions", session_id, "Session")
+    if guard:
+        return guard
+
+    target_semester = semester + 1
+    # Only students genuinely still sitting in `semester`, in this program,
+    # in this caller's context — a stale or tampered studentId is simply not
+    # in this set (spec §39: never trust an id sent by the frontend alone).
+    candidates = {s["id"]: s for s in _promotion_candidates(program_id, session_id, semester)}
+
+    promoted, rejected = [], []
+    for sid in student_ids:
+        sid = clean(sid, upper=True)
+        cand = candidates.get(sid)
+        if not cand:
+            rejected.append({"studentId": sid,
+                              "reason": "Not an active student of this program/semester"})
+            continue
+        try:
+            with transaction() as conn:
+                # 1. Re-verify current semester hasn't moved under us since
+                #    the preview was fetched (another admin tab, a retry...).
+                row = tquery(conn, "SELECT bs_current_semester, bs_batch_id FROM students "
+                                    "WHERE id=%s FOR UPDATE", (sid,), one=True)
+                if not row:
+                    raise ValueError("Student not found")
+                effective = row["bs_current_semester"]
+                if effective is None and row["bs_batch_id"]:
+                    b = tquery(conn, "SELECT current_semester FROM bs_batches WHERE id=%s",
+                               (row["bs_batch_id"],), one=True)
+                    effective = b["current_semester"] if b else None
+                if effective != semester:
+                    raise ValueError(f"Student is on semester {effective}, not {semester}")
+                # 2. Complete the semester + promote in one row update. Course
+                #    enrollments for the NEXT semester are created separately
+                #    when the admin generates/assigns that session's offerings
+                #    (spec §9, §20) — promotion's job is the semester counter,
+                #    not fabricating enrollments for courses not yet offered.
+                tquery(conn, "UPDATE students SET bs_current_semester=%s WHERE id=%s",
+                       (target_semester, sid))
+            promoted.append(sid)
+            write_audit_log(
+                "promote_student", "students", entity_id=sid, student_id=sid,
+                old_value=semester, new_value=target_semester)
+        except Exception as e:
+            rejected.append({"studentId": sid, "reason": str(e)})
+
+    return jsonify({
+        "success": True,
+        "promoted": promoted,
+        "rejected": rejected,
+        "targetSemester": target_semester,
+        "message": f"Promoted {len(promoted)} student(s) to semester {target_semester}",
+    })
 
 
 # ================================================================

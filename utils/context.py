@@ -628,6 +628,17 @@ _CTX_SOURCE_SQL = {
         "JOIN bs_offering_sections os ON os.id = a.offering_section_id "
         "JOIN bs_course_offerings o ON o.id = os.offering_id WHERE a.id=%s"
     ),
+
+    # ---- BS sessional marks (migration 005) -----------------------------
+    "bs_sessional_components": (
+        "SELECT o.department_id, o.campus_id FROM bs_sessional_components sc "
+        "JOIN bs_course_offerings o ON o.id = sc.offering_id WHERE sc.id=%s"
+    ),
+    "bs_sessional_marks": (
+        "SELECT o.department_id, o.campus_id FROM bs_sessional_marks sm "
+        "JOIN bs_offering_sections os ON os.id = sm.offering_section_id "
+        "JOIN bs_course_offerings o ON o.id = os.offering_id WHERE sm.id=%s"
+    ),
 }
 
 

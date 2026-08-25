@@ -27,6 +27,9 @@ let bsaView     = {             // drill-down state for the Curriculums and Sess
 let bsaProgressStudentId = '';
 let bsaProgressData      = null;
 let bsaCourseProgramFilter = '';   // '' = all programs
+let bsaPromoFilter = { programId: '', sessionId: '', semester: 1 };
+let bsaPromoData     = null;   // last /promotion/preview response
+let bsaPromoSelected = new Set();
 
 /* ─── API helper ─────────────────────────────────────────────────── */
 async function bsaFetch(url, opts = {}) {
@@ -68,6 +71,10 @@ async function bsaLoad(tab) {
       bsaCache.curriculums = bsaCache.curriculums || await bsaFetch('/api/bs/curriculums');
       bsaCache.sessions    = bsaCache.sessions    || await bsaFetch('/api/bs/sessions');
     }
+    if (tab === 'promotion') {
+      bsaCache.programs = bsaCache.programs || await bsaFetch('/api/bs/programs');
+      bsaCache.sessions = bsaCache.sessions || await bsaFetch('/api/bs/sessions');
+    }
   } catch (e) {
     bsaToast(e.message || 'Failed to load BS academic data', 'error');
   }
@@ -94,6 +101,7 @@ async function bsaLoadSectionExtra(sid) {
     bsaCache.secAttendance = await bsaFetch(`/api/bs/offering-sections/${sid}/attendance?date=${bsaCache.secAttDate}`);
   }
   if (t === 'results')   bsaCache.secRoster    = bsaCache.secRoster || await bsaFetch(`/api/bs/offering-sections/${sid}/students`);
+  if (t === 'sessional') bsaCache.secSessional = await bsaFetch(`/api/bs/offering-sections/${sid}/sessional-marks`);
 }
 
 function bsaSwitchTab(tab) {
@@ -171,6 +179,7 @@ function _bsaBody() {
     { key: 'sessions',    label: '🗓️ Sessions & Offerings' },
     { key: 'batches',     label: '👥 Batches' },
     { key: 'progress',    label: '📈 Progress' },
+    { key: 'promotion',   label: '⬆️ Promotion' },
   ];
   const tabBar = `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:18px;border-bottom:1px solid ${T.border};padding-bottom:2px">
     ${TABS.map(t => `<button type="button" onclick="bsaSwitchTab('${t.key}')" style="padding:9px 16px;border:none;border-radius:10px 10px 0 0;background:${bsaTab === t.key ? T.accentL : 'transparent'};color:${bsaTab === t.key ? T.accentD : T.muted};font-weight:${bsaTab === t.key ? 800 : 600};font-size:13px;cursor:pointer;border-bottom:2px solid ${bsaTab === t.key ? T.accent : 'transparent'};white-space:nowrap">${t.label}</button>`).join('')}
@@ -186,6 +195,7 @@ function _bsaBody() {
   if (bsaTab === 'sessions')    body = _bsaSessions();
   if (bsaTab === 'batches')     body = _bsaBatches();
   if (bsaTab === 'progress')    body = _bsaProgress();
+  if (bsaTab === 'promotion')   body = _bsaPromotion();
   return tabBar + body;
 }
 
@@ -902,6 +912,7 @@ function _bsaSectionDetail() {
     { key: 'roster',     label: '🎓 Roster' },
     { key: 'timetable',  label: '🕐 Timetable' },
     { key: 'attendance', label: '📋 Attendance' },
+    { key: 'sessional',  label: '🧮 Sessional' },
     { key: 'results',    label: '📝 Results' },
   ];
   return `
@@ -920,6 +931,7 @@ function _bsaSectionDetail() {
     ${bsaView.sectionTab === 'roster'     ? _bsaSecRoster(sid)     : ''}
     ${bsaView.sectionTab === 'timetable'  ? _bsaSecTimetable(sid)  : ''}
     ${bsaView.sectionTab === 'attendance' ? _bsaSecAttendance(sid) : ''}
+    ${bsaView.sectionTab === 'sessional'  ? _bsaSecSessional(sid) : ''}
     ${bsaView.sectionTab === 'results'    ? _bsaSecResults(sid)    : ''}
   </div>`;
 }
@@ -1096,6 +1108,97 @@ async function bsaSubmitAttendance(sid) {
       method: 'POST', body: JSON.stringify({ date: bsaCache.secAttDate, records }),
     });
     bsaToast(r.message); await bsaLoadSectionExtra(sid); _bsaRender();
+  } catch (e) { bsaToast(e.message, 'error'); }
+}
+
+/* ── Sessional marks sub-tab (spec §13) ───────────────────────── */
+function _bsaSecSessional(sid) {
+  const d = bsaCache.secSessional || { components: [], students: [], totalMax: 0 };
+  const configCard = card(`
+    ${secTitle('Sessional Breakdown', pbtn('+ Add Component', `bsaOpenAddSessionalComponent(${sid})`, 'sm'))}
+    ${!d.components.length ? `<div style="text-align:center;padding:16px;color:${T.muted}">No components configured yet — add Quiz, Assignment, Presentation, Midterm etc.</div>` : `
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      ${d.components.map(c => `<div style="display:flex;align-items:center;gap:8px;padding:6px 6px 6px 12px;background:${T.bg2};border-radius:20px;font-size:12px">
+        <span style="font-weight:700">${esc(c.name)}</span><span style="color:${T.muted}">/ ${c.maxMarks}</span>
+        <button type="button" onclick="bsaDeleteSessionalComponent(${c.id},${sid})" title="Delete" style="background:none;border:none;color:${T.red};cursor:pointer;font-size:14px;font-weight:800;padding:0 4px">×</button>
+      </div>`).join('')}
+      <div style="padding:6px 4px;font-size:12px;color:${T.muted};font-weight:700">= ${d.totalMax} total</div>
+    </div>`}
+  `);
+  if (!d.components.length) return configCard;
+
+  const gradeCard = card(`
+    ${secTitle('Enter Sessional Marks')}
+    ${!d.students.length ? `<div style="text-align:center;padding:20px;color:${T.muted}">No students enrolled yet.</div>` : `
+    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px" id="bsa-sess-table">
+      <thead><tr style="text-align:left;color:${T.muted};font-size:11px;text-transform:uppercase">
+        <th style="padding:8px">Student</th>
+        ${d.components.map(c => `<th style="padding:8px">${esc(c.name)}<br><span style="font-weight:400;text-transform:none">/ ${c.maxMarks}</span></th>`).join('')}
+        <th style="padding:8px">Total</th>
+      </tr></thead>
+      <tbody>
+        ${d.students.map(s => `<tr style="border-top:1px solid ${T.border}" data-sid="${esc(s.studentId)}">
+          <td style="padding:8px">${esc(s.rollNo)} — ${esc(s.studentName)}</td>
+          ${d.components.map(c => `<td style="padding:6px"><input type="number" min="0" max="${c.maxMarks}" step="0.5" value="${s.marks[String(c.id)] ?? ''}" data-cid="${c.id}" style="width:64px;padding:5px 6px;border:1.5px solid ${T.border2};border-radius:6px;font-size:12px;background:${T.surface};color:${T.text}"></td>`).join('')}
+          <td style="padding:8px;font-weight:700" data-total>${s.total}/${d.totalMax}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div>
+    <div style="margin-top:16px;text-align:right">${pbtn('Save Sessional Marks', `bsaSubmitSessionalMarks(${sid})`)}</div>`}
+  `);
+  return configCard + `<div style="margin-top:14px">${gradeCard}</div>`;
+}
+function bsaOpenAddSessionalComponent(sid) {
+  const offId = bsaCache.secSessional?.offeringId || bsaCache.offeringDetail?.offering?.id;
+  bsaShowPopup(bsaPopupHeader('🧮 Add Sessional Component') + `
+    <div style="display:grid;gap:12px">
+      ${bsaField('Name *', 'bsa-sc-name', '', 'text', 'Quiz')}
+      ${bsaField('Max Marks *', 'bsa-sc-max', '', 'number', '5')}
+    </div>
+    ${bsaFormErr()}
+    <div style="margin-top:16px;text-align:right">${pbtn('Add', `bsaSubmitAddSessionalComponent(${offId},${sid})`)}</div>
+  `, 380);
+}
+async function bsaSubmitAddSessionalComponent(offId, sid) {
+  const g = i => document.getElementById(i)?.value || '';
+  const name = g('bsa-sc-name').trim();
+  const maxMarks = g('bsa-sc-max');
+  if (!name) { bsaSetErr('Name is required.'); return; }
+  try {
+    await bsaFetch(`/api/bs/offerings/${offId}/sessional-components`, {
+      method: 'POST', body: JSON.stringify({ name, maxMarks }),
+    });
+    bsaHidePopup(); bsaToast('Component added.');
+    await bsaLoadSectionExtra(sid); (bsaMyTeachingSectionId ? _bsaTeachRender : _bsaRender)();
+  } catch (e) { bsaSetErr(e.message); }
+}
+async function bsaDeleteSessionalComponent(cid, sid) {
+  const ok = await confirmAction({ title: 'Delete component', tone: 'danger', message: 'Delete this sessional component? This is blocked if marks have already been entered for it.', confirmLabel: 'Delete' });
+  if (!ok) return;
+  try {
+    await bsaFetch(`/api/bs/sessional-components/${cid}`, { method: 'DELETE' });
+    bsaToast('Component deleted.');
+    await bsaLoadSectionExtra(sid); (bsaMyTeachingSectionId ? _bsaTeachRender : _bsaRender)();
+  } catch (e) { bsaToast(e.message, 'error'); }
+}
+async function bsaSubmitSessionalMarks(sid) {
+  const rows = document.querySelectorAll('#bsa-sess-table [data-sid]');
+  const records = [];
+  rows.forEach(r => {
+    const marks = {};
+    r.querySelectorAll('input[data-cid]').forEach(inp => {
+      if (inp.value !== '') marks[inp.dataset.cid] = inp.value;
+    });
+    if (Object.keys(marks).length) records.push({ studentId: r.dataset.sid, marks });
+  });
+  if (!records.length) { bsaToast('Enter at least one mark first.', 'warning'); return; }
+  try {
+    const r = await bsaFetch(`/api/bs/offering-sections/${sid}/sessional-marks`, {
+      method: 'POST', body: JSON.stringify({ records }),
+    });
+    if (r.rejected?.length) bsaToast(`${r.message} — ${r.rejected.length} entr${r.rejected.length === 1 ? 'y' : 'ies'} rejected (over the max or invalid).`, 'warning');
+    else bsaToast(r.message);
+    await bsaLoadSectionExtra(sid); (bsaMyTeachingSectionId ? _bsaTeachRender : _bsaRender)();
   } catch (e) { bsaToast(e.message, 'error'); }
 }
 
@@ -1304,6 +1407,104 @@ function _bsaProgressResult(p) {
 }
 
 /* ================================================================
+   SEMESTER PROMOTION TAB  (spec §15, §16, §17, §31)
+   ================================================================ */
+function _bsaPromotion() {
+  const programs = bsaCache.programs || [];
+  const sessions = bsaCache.sessions || [];
+  return `
+  ${card(`
+    ${secTitle('Semester Promotion')}
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+      <div style="min-width:200px">${bsaSelect('Program *', 'bsa-promo-program', programs.map(p => ({ value: p.id, label: p.name })), bsaPromoFilter.programId)}</div>
+      <div style="min-width:200px">${bsaSelect('Session *', 'bsa-promo-session', sessions.map(s => ({ value: s.id, label: s.name })), bsaPromoFilter.sessionId)}</div>
+      <div style="width:140px">${bsaField('Current Semester *', 'bsa-promo-semester', bsaPromoFilter.semester, 'number')}</div>
+      ${pbtn('Preview', 'bsaSearchPromotion()', 'sm')}
+    </div>
+  `)}
+  <div style="margin-top:14px">
+    ${bsaPromoData ? _bsaPromotionResult(bsaPromoData) : card(`<div style="text-align:center;padding:20px;color:${T.muted}">Choose a program, session and current semester, then Preview to see who is eligible to move up (spec §16).</div>`)}
+  </div>`;
+}
+async function bsaSearchPromotion() {
+  const programId = document.getElementById('bsa-promo-program')?.value;
+  const sessionId = document.getElementById('bsa-promo-session')?.value;
+  const semester  = document.getElementById('bsa-promo-semester')?.value || 1;
+  if (!programId || !sessionId) { bsaToast('Pick a program and session first.', 'warning'); return; }
+  bsaPromoFilter = { programId, sessionId, semester };
+  try {
+    bsaPromoData = await bsaFetch(`/api/bs/promotion/preview?programId=${programId}&sessionId=${sessionId}&semester=${semester}`);
+    bsaPromoSelected = new Set(bsaPromoData.students.filter(s => s.status === 'eligible').map(s => s.studentId));
+    _bsaRender();
+  } catch (e) { bsaToast(e.message, 'error'); }
+}
+function _bsaPromotionResult(d) {
+  if (!d.students.length) return card(`<div style="text-align:center;padding:20px;color:${T.muted}">No active students of this program are currently on semester ${d.semester}.</div>`);
+  return card(`
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+      <div style="font-size:13px;color:${T.muted}">
+        <b style="color:${T.text}">${d.students.length}</b> student(s) on Semester ${d.semester} —
+        <span style="color:${T.green}">${d.eligibleCount} eligible</span>,
+        <span style="color:${T.orange}">${d.reviewCount} need review</span>.
+        Promoting moves them to Semester <b>${d.targetSemester}</b>.
+      </div>
+      <div style="display:flex;gap:8px">
+        ${obtn('Select All Eligible', 'bsaSelectAllEligiblePromo()', 'sm')}
+        ${pbtn(`Promote Selected (${bsaPromoSelected.size})`, 'bsaSubmitPromotion()', 'sm')}
+      </div>
+    </div>
+    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px" id="bsa-promo-table">
+      <thead><tr style="text-align:left;color:${T.muted};font-size:10px;text-transform:uppercase">
+        <th style="padding:6px"></th><th style="padding:6px">Student</th><th style="padding:6px">GPA</th>
+        <th style="padding:6px">Failed</th><th style="padding:6px">Attendance</th><th style="padding:6px">Fee</th>
+        <th style="padding:6px">Status</th><th style="padding:6px">Reason</th>
+      </tr></thead>
+      <tbody>${d.students.map(s => `<tr style="border-top:1px solid ${T.border}" data-sid="${esc(s.studentId)}">
+        <td style="padding:6px"><input type="checkbox" ${bsaPromoSelected.has(s.studentId) ? 'checked' : ''} onchange="bsaTogglePromoStudent('${esc(s.studentId)}',this.checked)"></td>
+        <td style="padding:6px">${esc(s.rollNo)} — ${esc(s.studentName)}</td>
+        <td style="padding:6px">${s.gpa ?? '—'}</td>
+        <td style="padding:6px">${s.failedSubjects}</td>
+        <td style="padding:6px">${s.attendancePct !== null ? s.attendancePct + '%' : '—'}</td>
+        <td style="padding:6px">${s.feeCleared ? '✅' : '⚠️'}</td>
+        <td style="padding:6px">${badge(s.status === 'eligible' ? 'active' : 'pending')}</td>
+        <td style="padding:6px;color:${T.muted}">${esc(s.reasons.join('; '))}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>
+  `);
+}
+function bsaTogglePromoStudent(sid, checked) {
+  if (checked) bsaPromoSelected.add(sid); else bsaPromoSelected.delete(sid);
+  _bsaRender();
+}
+function bsaSelectAllEligiblePromo() {
+  bsaPromoSelected = new Set((bsaPromoData?.students || []).filter(s => s.status === 'eligible').map(s => s.studentId));
+  _bsaRender();
+}
+async function bsaSubmitPromotion() {
+  if (!bsaPromoSelected.size) { bsaToast('Select at least one student first.', 'warning'); return; }
+  const ok = await confirmAction({
+    title: 'Promote students', tone: 'warning',
+    message: `Promote ${bsaPromoSelected.size} student(s) from Semester ${bsaPromoFilter.semester} to Semester ${Number(bsaPromoFilter.semester) + 1}? This is logged and can be reviewed in the audit log.`,
+    confirmLabel: 'Promote',
+  });
+  if (!ok) return;
+  try {
+    const r = await bsaFetch('/api/bs/promotion/execute', {
+      method: 'POST',
+      body: JSON.stringify({
+        programId: bsaPromoFilter.programId, sessionId: bsaPromoFilter.sessionId,
+        semester: bsaPromoFilter.semester, studentIds: Array.from(bsaPromoSelected),
+      }),
+    });
+    if (r.rejected?.length) bsaToast(`${r.message} — ${r.rejected.length} skipped (see console).`, 'warning');
+    else bsaToast(r.message);
+    if (r.rejected?.length) console.warn('Promotion rejections:', r.rejected);
+    await bsaSearchPromotion();
+  } catch (e) { bsaToast(e.message, 'error'); }
+}
+
+
+/* ================================================================
    TEACHER — MY TEACHING  (spec §31)
    ================================================================ */
 let bsaMyTeaching = null;
@@ -1356,6 +1557,7 @@ function _bsaTeachSectionDetail() {
   const SUBTABS = [
     { key: 'roster',     label: '🎓 Roster' },
     { key: 'attendance', label: '📋 Attendance' },
+    { key: 'sessional',  label: '🧮 Sessional' },
     { key: 'results',    label: '📝 Results' },
   ];
   bsaView.sectionTab = bsaMyTeachingSubTab; // keep shared renderers pointed at the right sub-view
@@ -1371,6 +1573,7 @@ function _bsaTeachSectionDetail() {
   <div style="margin-top:14px">
     ${bsaMyTeachingSubTab === 'roster'     ? _bsaSecRoster(bsaMyTeachingSectionId).replace(/bsaOpenEnroll|bsaDeleteEnrollment/g, m => m) : ''}
     ${bsaMyTeachingSubTab === 'attendance' ? _bsaSecAttendance(bsaMyTeachingSectionId) : ''}
+    ${bsaMyTeachingSubTab === 'sessional'  ? _bsaSecSessional(bsaMyTeachingSectionId) : ''}
     ${bsaMyTeachingSubTab === 'results'    ? _bsaSecResults(bsaMyTeachingSectionId)    : ''}
   </div>`;
 }

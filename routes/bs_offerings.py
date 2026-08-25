@@ -41,6 +41,9 @@ Endpoints
   DELETE       /api/bs/timetable-slots/<id>
   GET          /api/bs/timetable
   GET/POST     /api/bs/offering-sections/<id>/attendance
+  GET/POST     /api/bs/offerings/<id>/sessional-components   configurable breakdown
+  PUT/DELETE   /api/bs/sessional-components/<id>
+  GET/POST     /api/bs/offering-sections/<id>/sessional-marks   internal assessment entry
   POST         /api/bs/offering-sections/<id>/results      grade entry
   GET          /api/bs/students/<id>/progress              credit-hour progress
   GET          /api/bs/my/teaching                         teacher portal §31
@@ -54,6 +57,7 @@ from flask import Blueprint, jsonify, request
 from flask_login import current_user
 
 from db import query
+from utils.audit import write_audit_log
 from utils.bs_academic import (
     GRADE_POINTS,
     bs_read,
@@ -71,6 +75,7 @@ from utils.bs_academic import (
     safe_enrollment,
     safe_offering,
     safe_offering_section,
+    safe_sessional_component,
     safe_slot,
     safe_teaching_assignment,
     section_seats,
@@ -1309,6 +1314,304 @@ def api_bs_attendance_summary(sid):
 
 
 # ================================================================
+# SESSIONAL MARKS  (spec §13)  —  configurable internal-assessment breakdown
+# ================================================================
+# The breakdown (Quiz / Assignment / Presentation / Midterm ...) lives on
+# the OFFERING, not on the course, for the same reason actual_semester does
+# (migration 003): the same course can carry a different breakdown each
+# session without rewriting history. "obtained <= max" is enforced here,
+# server-side, on every write — never trusted from the frontend (spec §26,
+# §39). A component's total is informational; there is no hard requirement
+# that components sum to a fixed total, since departments vary that policy.
+
+@bs_offerings_bp.route("/api/bs/offerings/<int:oid>/sessional-components", methods=["GET"])
+@bs_read
+def api_bs_list_sessional_components(oid):
+    guard = assert_in_context("bs_course_offerings", oid, "Offering")
+    if guard:
+        return guard
+    rows = query(
+        "SELECT * FROM bs_sessional_components WHERE offering_id=%s "
+        "ORDER BY sort_order, id", (oid,))
+    total_max = sum(float(r["max_marks"]) for r in rows)
+    return jsonify({
+        "offeringId": oid,
+        "components": [safe_sessional_component(r) for r in rows],
+        "totalMax": total_max,
+    })
+
+
+@bs_offerings_bp.route("/api/bs/offerings/<int:oid>/sessional-components", methods=["POST"])
+@bs_write()
+def api_bs_create_sessional_component(oid):
+    """
+    Configure (or reconfigure) the sessional breakdown for one offering.
+
+    Body: {"components": [{"name": "Quiz", "maxMarks": 5}, ...]}  replaces
+    the whole breakdown for offerings with no marks recorded yet, OR
+    {"name": "Quiz", "maxMarks": 5} adds a single component — both shapes
+    are accepted so the admin UI can do either a one-shot setup or add one
+    component at a time.
+    """
+    guard = assert_in_context("bs_course_offerings", oid, "Offering")
+    if guard:
+        return guard
+
+    data = request.get_json(force=True, silent=True) or {}
+    items = data.get("components")
+    if items is None:
+        items = [data]  # single-component shape
+    if not isinstance(items, list) or not items:
+        return json_error("No components supplied")
+
+    created, rejected = [], []
+    for idx, item in enumerate(items):
+        name = clean(item.get("name"))
+        max_marks = item.get("maxMarks")
+        if not name:
+            rejected.append({"name": name, "reason": "Name is required"})
+            continue
+        try:
+            max_marks = float(max_marks)
+        except (TypeError, ValueError):
+            rejected.append({"name": name, "reason": "maxMarks must be a number"})
+            continue
+        if max_marks < 0:
+            rejected.append({"name": name, "reason": "maxMarks cannot be negative"})
+            continue
+        existing = query(
+            "SELECT id FROM bs_sessional_components WHERE offering_id=%s AND name=%s",
+            (oid, name), one=True)
+        if existing:
+            rejected.append({"name": name, "reason": "A component with this name already exists"})
+            continue
+        cid = query(
+            "INSERT INTO bs_sessional_components (offering_id, name, max_marks, sort_order) "
+            "VALUES (%s,%s,%s,%s)",
+            (oid, name, max_marks, parse_int(item.get("sortOrder"), idx)), commit=True)
+        created.append(cid)
+
+    if not created:
+        return jsonify({"success": False, "created": [], "rejected": rejected}), 400
+    rows = query(
+        "SELECT * FROM bs_sessional_components WHERE offering_id=%s ORDER BY sort_order, id",
+        (oid,))
+    return jsonify({
+        "success": True,
+        "components": [safe_sessional_component(r) for r in rows],
+        "rejected": rejected,
+    }), 201
+
+
+@bs_offerings_bp.route("/api/bs/sessional-components/<int:cid>", methods=["PUT"])
+@bs_write()
+def api_bs_update_sessional_component(cid):
+    guard = assert_in_context("bs_sessional_components", cid, "Component")
+    if guard:
+        return guard
+    row = query("SELECT * FROM bs_sessional_components WHERE id=%s", (cid,), one=True)
+    if not row:
+        return json_error("Component not found", 404)
+
+    data = request.get_json(force=True, silent=True) or {}
+    name = clean(data.get("name")) or row["name"]
+    max_marks = data.get("maxMarks")
+    try:
+        max_marks = float(max_marks) if max_marks is not None else float(row["max_marks"])
+    except (TypeError, ValueError):
+        return json_error("maxMarks must be a number")
+    if max_marks < 0:
+        return json_error("maxMarks cannot be negative")
+
+    # Lowering the max below marks already recorded would silently make an
+    # existing obtained value invalid — surface that instead of hiding it.
+    over = query(
+        "SELECT COUNT(*) AS n FROM bs_sessional_marks WHERE component_id=%s AND obtained_marks > %s",
+        (cid, max_marks), one=True)
+    if over and over["n"]:
+        return json_error(
+            f"{over['n']} student(s) already have marks above {max_marks} for this "
+            "component — raise the max or correct those marks first", 409)
+
+    query("UPDATE bs_sessional_components SET name=%s, max_marks=%s, sort_order=%s WHERE id=%s",
+          (name, max_marks, parse_int(data.get("sortOrder"), row["sort_order"]), cid), commit=True)
+    updated = query("SELECT * FROM bs_sessional_components WHERE id=%s", (cid,), one=True)
+    return jsonify(safe_sessional_component(updated))
+
+
+@bs_offerings_bp.route("/api/bs/sessional-components/<int:cid>", methods=["DELETE"])
+@bs_write()
+def api_bs_delete_sessional_component(cid):
+    guard = assert_in_context("bs_sessional_components", cid, "Component")
+    if guard:
+        return guard
+    marked = query("SELECT COUNT(*) AS n FROM bs_sessional_marks WHERE component_id=%s",
+                   (cid,), one=True)
+    if marked and marked["n"]:
+        return json_error(
+            f"{marked['n']} student(s) already have marks recorded for this component — "
+            "remove those marks before deleting it", 409)
+    query("DELETE FROM bs_sessional_components WHERE id=%s", (cid,), commit=True)
+    return jsonify({"success": True})
+
+
+@bs_offerings_bp.route("/api/bs/offering-sections/<int:sid>/sessional-marks", methods=["GET"])
+@bs_mark
+def api_bs_get_sessional_marks(sid):
+    """Roster x components grid: every enrolled student's marks for every
+    configured component, plus each student's running total (spec §25)."""
+    guard = assert_in_context("bs_offering_sections", sid, "Section")
+    if guard:
+        return guard
+    denied = _may_teach(sid)
+    if denied:
+        return denied
+
+    off = offering_of_section(sid)
+    if not off:
+        return json_error("Section not found", 404)
+
+    components = query(
+        "SELECT * FROM bs_sessional_components WHERE offering_id=%s ORDER BY sort_order, id",
+        (off["id"],))
+    total_max = sum(float(c["max_marks"]) for c in components)
+
+    roster = query("""
+        SELECT en.student_id, st.name AS student_name, st.roll_no
+        FROM   bs_enrollments en
+        JOIN   students st ON st.id = en.student_id
+        WHERE  en.offering_section_id=%s AND en.status IN ('enrolled','completed')
+        ORDER  BY st.roll_no, st.name
+    """, (sid,))
+    marks = {(m["student_id"], m["component_id"]): float(m["obtained_marks"]) for m in query(
+        "SELECT sm.student_id, sm.component_id, sm.obtained_marks FROM bs_sessional_marks sm "
+        "WHERE sm.offering_section_id=%s", (sid,))}
+
+    students = []
+    for r in roster:
+        per_component = {}
+        obtained_total = 0.0
+        for c in components:
+            v = marks.get((r["student_id"], c["id"]))
+            if v is not None:
+                obtained_total += v
+            per_component[str(c["id"])] = v
+        students.append({
+            "studentId":   r["student_id"],
+            "studentName": r["student_name"],
+            "rollNo":      r["roll_no"] or "",
+            "marks":       per_component,
+            "total":       round(obtained_total, 2),
+        })
+
+    return jsonify({
+        "sectionId":  sid,
+        "offeringId": off["id"],
+        "components": [safe_sessional_component(c) for c in components],
+        "totalMax":   total_max,
+        "students":   students,
+    })
+
+
+@bs_offerings_bp.route("/api/bs/offering-sections/<int:sid>/sessional-marks", methods=["POST"])
+@bs_mark
+def api_bs_enter_sessional_marks(sid):
+    """
+    Body: {"records": [{"studentId": "BSCS-001", "marks": {"3": 4, "4": 5}}, ...]}
+    where each key of "marks" is a component id.
+
+    Every value is checked against its component's max_marks before it is
+    written — 35/30 is rejected the same way whichever student, component,
+    or teacher sends it (spec §13, §26).
+    """
+    guard = assert_in_context("bs_offering_sections", sid, "Section")
+    if guard:
+        return guard
+    denied = _may_teach(sid)
+    if denied:
+        return denied
+
+    off = offering_of_section(sid)
+    if not off:
+        return json_error("Section not found", 404)
+
+    records = (request.get_json(force=True, silent=True) or {}).get("records") or []
+    if not isinstance(records, list) or not records:
+        return json_error("No marks supplied")
+
+    components = {c["id"]: c for c in query(
+        "SELECT * FROM bs_sessional_components WHERE offering_id=%s", (off["id"],))}
+    if not components:
+        return json_error("No sessional components are configured for this offering yet", 400)
+
+    enrolled = {r["student_id"] for r in query(
+        "SELECT student_id FROM bs_enrollments "
+        "WHERE offering_section_id=%s AND status IN ('enrolled','completed')", (sid,))}
+
+    # Snapshot existing marks so an overwrite can be logged with old->new
+    # (spec §27 - "Old: 22, New: 25"), not just the fact that a write happened.
+    existing = {(m["student_id"], m["component_id"]): float(m["obtained_marks"])
+                for m in query(
+        "SELECT student_id, component_id, obtained_marks FROM bs_sessional_marks "
+        "WHERE offering_section_id=%s", (sid,))}
+
+    saved, rejected = 0, []
+    for rec in records:
+        student_id = clean(rec.get("studentId"))
+        if student_id not in enrolled:
+            rejected.append({"studentId": student_id, "reason": "Not enrolled in this section"})
+            continue
+        per_component = rec.get("marks") or {}
+        if not isinstance(per_component, dict):
+            rejected.append({"studentId": student_id, "reason": "marks must be an object"})
+            continue
+        for raw_cid, raw_val in per_component.items():
+            cid = parse_int(raw_cid)
+            comp = components.get(cid)
+            if not comp:
+                rejected.append({"studentId": student_id, "componentId": raw_cid,
+                                  "reason": "Unknown component for this offering"})
+                continue
+            if raw_val in (None, ""):
+                continue  # leave ungraded rather than force a zero
+            try:
+                obtained = float(raw_val)
+            except (TypeError, ValueError):
+                rejected.append({"studentId": student_id, "componentId": cid,
+                                  "reason": "Marks must be a number"})
+                continue
+            max_marks = float(comp["max_marks"])
+            if obtained < 0 or obtained > max_marks:
+                rejected.append({"studentId": student_id, "componentId": cid,
+                                  "reason": f"{obtained} exceeds the maximum of {max_marks}"})
+                continue
+            try:
+                query("""
+                    INSERT INTO bs_sessional_marks
+                        (student_id, component_id, offering_section_id, obtained_marks, entered_by)
+                    VALUES (%s,%s,%s,%s,%s)
+                    ON DUPLICATE KEY UPDATE
+                        obtained_marks=VALUES(obtained_marks),
+                        entered_by=VALUES(entered_by),
+                        offering_section_id=VALUES(offering_section_id)
+                """, (student_id, cid, sid, obtained, str(current_user.id)[:10]), commit=True)
+                saved += 1
+                prev = existing.get((student_id, cid))
+                if prev is not None and prev != obtained:
+                    write_audit_log(
+                        "override_sessional_marks", "bs_sessional_marks",
+                        entity_id=f"{student_id}:{cid}", student_id=student_id,
+                        old_value=prev, new_value=obtained)
+            except Exception as e:
+                rejected.append({"studentId": student_id, "componentId": cid, "reason": str(e)})
+
+    return jsonify({
+        "success": True, "saved": saved, "rejected": rejected,
+        "message": f"Sessional marks recorded for {saved} entr{'y' if saved == 1 else 'ies'}",
+    })
+
+
+# ================================================================
 # RESULTS / ATTEMPTS  (spec §20, §25)
 # ================================================================
 
@@ -1341,6 +1644,13 @@ def api_bs_enter_results(sid):
         "SELECT id, student_id FROM bs_enrollments "
         "WHERE offering_section_id=%s AND status IN ('enrolled','completed')", (sid,))}
 
+    # Snapshot prior grades so an admin correction is logged old->new (spec §27).
+    prior_grades = {a["student_id"]: a["grade"] for a in query("""
+        SELECT at.student_id, at.grade FROM bs_course_attempts at
+        WHERE at.course_id=%s AND at.student_id IN (
+            SELECT student_id FROM bs_enrollments WHERE offering_section_id=%s)
+    """, (off["course_id"], sid))}
+
     saved, rejected = 0, []
     for rec in results:
         student_id = clean(rec.get("studentId"))
@@ -1363,6 +1673,12 @@ def api_bs_enter_results(sid):
             query("UPDATE bs_enrollments SET status='completed' WHERE id=%s",
                   (enrolled[student_id],), commit=True)
             saved += 1
+            prev_grade = prior_grades.get(student_id)
+            if prev_grade and prev_grade != grade:
+                write_audit_log(
+                    "override_final_grade", "bs_course_attempts",
+                    entity_id=attempt_id, student_id=student_id,
+                    old_value=prev_grade, new_value=grade)
         except Exception as e:
             rejected.append({"studentId": student_id, "reason": str(e)})
 
